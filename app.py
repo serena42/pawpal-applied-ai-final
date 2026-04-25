@@ -281,81 +281,78 @@ if st.button("Generate daily plan", type="primary"):
         else:
             scheduler = Scheduler(owner, owner.pets[0])
             all_plans = scheduler.generate_all_plans()
+            # Store in session state so display persists across reruns.
+            st.session_state["_plans"] = all_plans
+            st.session_state["_owner"] = owner
+            st.session_state.pop("_fixed_plans", None)
+            st.session_state.pop("_agent_history", None)
 
-            # Warnings per pet
-            for pet_name, plan in all_plans.items():
-                for w in plan.warnings:
-                    p_obj = next((p for p in owner.pets if p.name == pet_name), None)
-                    p_icon = PET_EMOJI.get(p_obj.pet_type, "") if p_obj else ""
-                    st.warning(f"{p_icon} **{pet_name}:** {w}")
+# ---------------------------------------------------------------------------
+# Schedule display + conflict detection (reads from session state)
+# ---------------------------------------------------------------------------
+CONFLICT_ICONS = {
+    "overlap": "🔴", "dependency": "🟠", "gap": "🟡",
+    "timeout": "🟣", "outside_window": "⚪",
+}
 
-            # Unified time-ordered schedule across all pets
-            combined = [
-                (entry, pet_name)
-                for pet_name, plan in all_plans.items()
-                for entry in plan.scheduled
-            ]
-            combined.sort(key=lambda x: x[0].start_time)
+if "_plans" in st.session_state:
+    all_plans = st.session_state["_plans"]
+    owner     = st.session_state["_owner"]
 
-            st.header("Daily Schedule")
-            if combined:
-                for entry, pet_name in combined:
-                    tr = (
-                        f"{entry.start_time.strftime('%H:%M')} – "
-                        f"{entry.end_time.strftime('%H:%M')}"
-                    )
-                    emoji = TASK_EMOJI.get(entry.task.task_type, "")
-                    pet_obj = next((p for p in owner.pets if p.name == pet_name), None)
-                    pet_icon = PET_EMOJI.get(pet_obj.pet_type, "") if pet_obj else ""
-                    st.markdown(f"**{tr}** &nbsp; {emoji} {entry.task.name} &nbsp; {pet_icon} _{pet_name}_")
-            else:
-                st.error("No tasks could be scheduled in the available time windows.")
+    # Warnings per pet
+    for pet_name, plan in all_plans.items():
+        for w in plan.warnings:
+            p_obj = next((p for p in owner.pets if p.name == pet_name), None)
+            p_icon = PET_EMOJI.get(p_obj.pet_type, "") if p_obj else ""
+            st.warning(f"{p_icon} **{pet_name}:** {w}")
 
-            # ---------------------------------------------------------------
-            # Conflict detection + AI repair
-            # ---------------------------------------------------------------
-            conflicts = detect_conflicts(all_plans, owner, owner.pets)
-            if conflicts:
-                st.divider()
-                st.subheader("Conflicts Detected")
-                CONFLICT_ICONS = {
-                    "overlap":       "🔴",
-                    "dependency":    "🟠",
-                    "gap":           "🟡",
-                    "timeout":       "🟣",
-                    "outside_window": "⚪",
-                }
-                for c in conflicts:
-                    icon = CONFLICT_ICONS.get(c.conflict_type, "")
-                    st.error(f"{icon} **{c.conflict_type.upper()}** — {c.reason}")
+    # Unified time-ordered schedule
+    combined = sorted(
+        [(entry, pet_name)
+         for pet_name, plan in all_plans.items()
+         for entry in plan.scheduled],
+        key=lambda x: x[0].start_time,
+    )
+    st.header("Daily Schedule")
+    if combined:
+        for entry, pet_name in combined:
+            tr = (f"{entry.start_time.strftime('%H:%M')} – "
+                  f"{entry.end_time.strftime('%H:%M')}")
+            emoji    = TASK_EMOJI.get(entry.task.task_type, "")
+            pet_obj  = next((p for p in owner.pets if p.name == pet_name), None)
+            pet_icon = PET_EMOJI.get(pet_obj.pet_type, "") if pet_obj else ""
+            st.markdown(f"**{tr}** &nbsp; {emoji} {entry.task.name} &nbsp; {pet_icon} _{pet_name}_")
+    else:
+        st.error("No tasks could be scheduled in the available time windows.")
 
-                st.divider()
-                if st.button("Fix conflicts with AI", type="primary"):
-                    st.session_state["_fix_plans"]  = all_plans
-                    st.session_state["_fix_owner"]  = owner
-                    st.session_state["_run_agent"]  = True
-                    st.rerun()
-            else:
-                st.success("No conflicts — schedule is valid.")
+    # Conflict detection
+    conflicts = detect_conflicts(all_plans, owner, owner.pets)
+    if conflicts:
+        st.divider()
+        st.subheader("Conflicts Detected")
+        for c in conflicts:
+            icon = CONFLICT_ICONS.get(c.conflict_type, "")
+            st.error(f"{icon} **{c.conflict_type.upper()}** — {c.reason}")
 
-# ---------------------------------------------------------------
-# AI repair panel (persists across reruns via session state)
-# ---------------------------------------------------------------
-if st.session_state.get("_run_agent"):
-    st.session_state["_run_agent"] = False
-    plans = st.session_state["_fix_plans"]
-    owner = st.session_state["_fix_owner"]
-    with st.spinner("AI agent is repairing the schedule..."):
-        agent = ScheduleAgent()
-        fixed_plans, history = agent.fix_schedule(plans, owner, owner.pets)
-    st.session_state["_fixed_plans"]   = fixed_plans
-    st.session_state["_agent_history"] = history
-    st.session_state["_fix_owner"]     = owner
+        st.divider()
+        if st.button("Fix conflicts with AI", type="primary"):
+            with st.spinner("AI agent is repairing the schedule..."):
+                fixed_plans, history = ScheduleAgent().fix_schedule(
+                    all_plans, owner, owner.pets
+                )
+            st.session_state["_fixed_plans"]   = fixed_plans
+            st.session_state["_agent_history"] = history
+    else:
+        if "_fixed_plans" not in st.session_state:
+            st.success("No conflicts — schedule is valid.")
 
-if st.session_state.get("_fixed_plans"):
+# ---------------------------------------------------------------------------
+# AI-repaired schedule (displayed after agent runs)
+# ---------------------------------------------------------------------------
+if "_fixed_plans" in st.session_state:
     fixed_plans = st.session_state["_fixed_plans"]
     history     = st.session_state.get("_agent_history", [])
-    owner       = st.session_state["_fix_owner"]
+    owner       = st.session_state["_owner"]
 
     st.divider()
     st.header("AI-Repaired Schedule")
@@ -369,14 +366,14 @@ if st.session_state.get("_fixed_plans"):
             )
 
     combined_fixed = sorted(
-        [(sched, pet) for pet, plan in fixed_plans.items() for sched in plan.scheduled],
+        [(sched, pet_name)
+         for pet_name, plan in fixed_plans.items()
+         for sched in plan.scheduled],
         key=lambda x: x[0].start_time,
     )
     for entry, pet_name in combined_fixed:
-        tr = (
-            f"{entry.start_time.strftime('%H:%M')} – "
-            f"{entry.end_time.strftime('%H:%M')}"
-        )
+        tr = (f"{entry.start_time.strftime('%H:%M')} – "
+              f"{entry.end_time.strftime('%H:%M')}")
         emoji    = TASK_EMOJI.get(entry.task.task_type, "")
         pet_obj  = next((p for p in owner.pets if p.name == pet_name), None)
         pet_icon = PET_EMOJI.get(pet_obj.pet_type, "") if pet_obj else ""

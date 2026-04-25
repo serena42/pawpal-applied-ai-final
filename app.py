@@ -1,9 +1,14 @@
 import streamlit as st
 from datetime import time
-from models import Task, TaskType, Owner, Pet, Scheduler, PET_TASK_DEFAULTS, TASK_EMOJI, PET_EMOJI
+from models import (
+    Task, TaskType, Owner, Pet, Scheduler,
+    PET_TASK_DEFAULTS, TASK_EMOJI, PET_EMOJI,
+    ENERGY_DURATION_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
+)
 from persistence import save, load, save_exists, owner_to_dict
 from conflict_detector import detect_conflicts, recommend_service
 from agent import ScheduleAgent
+from breed_db import get_trie
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 st.title("🐾 PawPal+")
@@ -12,6 +17,14 @@ st.caption("Daily pet care planner")
 TASK_LABELS: dict[TaskType, str] = {tt: tt.value.capitalize() for tt in TaskType}
 LABEL_TO_TYPE: dict[str, TaskType] = {v: k for k, v in TASK_LABELS.items()}
 PET_TYPES = ["dog", "cat", "rabbit", "bird", "snake", "iguana", "fish", "other"]
+_ENERGY_OPTS = ["low", "medium", "high", "very_high"]
+_AGE_OPTS    = ["puppy", "adult", "senior"]
+
+
+def _apply_breed(pid: int, breed_map: dict) -> None:
+    sel = st.session_state.get(f"p{pid}_breed_suggestion")
+    if sel and sel in breed_map:
+        st.session_state[f"p{pid}_energy_level"] = breed_map[sel]["energy_level"]
 
 # ---------------------------------------------------------------------------
 # Session state bootstrap (runs once per browser session)
@@ -25,8 +38,10 @@ if "win_ids" not in st.session_state:
 if "pet_ids" not in st.session_state:
     st.session_state.pet_ids = [0]
     st.session_state.next_pet_id = 1
-    st.session_state["p0_name"] = "Mochi"
-    st.session_state["p0_type"] = "dog"
+    st.session_state["p0_name"]         = "Mochi"
+    st.session_state["p0_type"]         = "dog"
+    st.session_state["p0_energy_level"] = "medium"
+    st.session_state["p0_age_group"]    = "adult"
 
 
 # ---------------------------------------------------------------------------
@@ -55,9 +70,12 @@ def _session_to_dict() -> dict:
             for label in st.session_state.get(f"p{pid}_tasks", [])
         ]
         pets.append({
-            "name":  st.session_state.get(f"p{pid}_name", ""),
-            "type":  st.session_state.get(f"p{pid}_type", "dog"),
-            "tasks": tasks,
+            "name":         st.session_state.get(f"p{pid}_name", ""),
+            "type":         st.session_state.get(f"p{pid}_type", "dog"),
+            "breed":        st.session_state.get(f"p{pid}_breed", ""),
+            "energy_level": st.session_state.get(f"p{pid}_energy_level", "medium"),
+            "age_group":    st.session_state.get(f"p{pid}_age_group", "adult"),
+            "tasks":        tasks,
         })
     return {
         "owner_name": st.session_state.get("owner_name", ""),
@@ -86,8 +104,11 @@ def _dict_to_session(data: dict) -> None:
     for p in data["pets"]:
         pid = st.session_state.next_pet_id
         st.session_state.pet_ids.append(pid)
-        st.session_state[f"p{pid}_name"] = p["name"]
-        st.session_state[f"p{pid}_type"] = p["type"]
+        st.session_state[f"p{pid}_name"]         = p["name"]
+        st.session_state[f"p{pid}_type"]         = p["type"]
+        st.session_state[f"p{pid}_breed"]        = p.get("breed", "")
+        st.session_state[f"p{pid}_energy_level"] = p.get("energy_level", "medium")
+        st.session_state[f"p{pid}_age_group"]    = p.get("age_group", "adult")
         labels = [TASK_LABELS[TaskType(td["task_type"])] for td in p["tasks"]]
         st.session_state[f"p{pid}_tasks"] = labels
         for td in p["tasks"]:
@@ -169,6 +190,36 @@ for pid in st.session_state.pet_ids:
         )
 
     cur_type = st.session_state[f"p{pid}_type"]
+
+    # Ensure energy/age keys exist before widgets render them
+    if f"p{pid}_energy_level" not in st.session_state:
+        st.session_state[f"p{pid}_energy_level"] = "medium"
+    if f"p{pid}_age_group" not in st.session_state:
+        st.session_state[f"p{pid}_age_group"] = "adult"
+
+    # Breed search + energy level + age group
+    bc1, bc2, bc3 = st.columns([4, 3, 3])
+    with bc1:
+        st.text_input("Breed (optional)", key=f"p{pid}_breed",
+                      placeholder="e.g. Labrador Retriever")
+    with bc2:
+        st.selectbox("Energy level", _ENERGY_OPTS, key=f"p{pid}_energy_level")
+    with bc3:
+        st.selectbox("Age group", _AGE_OPTS, key=f"p{pid}_age_group")
+
+    _breed_val = st.session_state.get(f"p{pid}_breed", "")
+    if len(_breed_val) >= 2:
+        _matches = get_trie().search(_breed_val)
+        if _matches:
+            _breed_map = {b["name"]: b for b in _matches}
+            st.selectbox(
+                "Breed suggestion",
+                options=list(_breed_map.keys()),
+                key=f"p{pid}_breed_suggestion",
+                on_change=_apply_breed,
+                args=(pid, _breed_map),
+            )
+
     pet_defaults = [TASK_LABELS[tt] for tt in PET_TASK_DEFAULTS.get(cur_type, [TaskType.FEEDING])]
     st.multiselect(
         "Active tasks",
@@ -225,8 +276,10 @@ if pet_to_remove is not None:
 if st.button("+ Add another pet"):
     nid = st.session_state.next_pet_id
     st.session_state.pet_ids.append(nid)
-    st.session_state[f"p{nid}_name"] = ""
-    st.session_state[f"p{nid}_type"] = "dog"
+    st.session_state[f"p{nid}_name"]         = ""
+    st.session_state[f"p{nid}_type"]         = "dog"
+    st.session_state[f"p{nid}_energy_level"] = "medium"
+    st.session_state[f"p{nid}_age_group"]    = "adult"
     st.session_state.next_pet_id += 1
     st.rerun()
 
@@ -250,20 +303,29 @@ if st.button("Generate daily plan", type="primary"):
             )
 
         for pid in st.session_state.pet_ids:
-            pname = st.session_state.get(f"p{pid}_name") or "Pet"
-            ptype = st.session_state[f"p{pid}_type"]
-            selected = st.session_state.get(f"p{pid}_tasks", [])
+            pname        = st.session_state.get(f"p{pid}_name") or "Pet"
+            ptype        = st.session_state[f"p{pid}_type"]
+            energy_level = st.session_state.get(f"p{pid}_energy_level", "medium")
+            age_group    = st.session_state.get(f"p{pid}_age_group", "adult")
+            selected     = st.session_state.get(f"p{pid}_tasks", [])
             if not selected:
                 continue
 
-            pet = Pet(pname, ptype)
+            e_dur  = ENERGY_DURATION_MULT.get(energy_level, 1.0)
+            a_dur  = AGE_DURATION_MULT.get(age_group, 1.0)
+            a_freq = AGE_FREQUENCY_MULT.get(age_group, 1.0)
+
+            pet = Pet(pname, ptype, energy_level=energy_level, age_group=age_group)
             feeding_task = None
 
             for label in selected:
-                tt = LABEL_TO_TYPE[label]
+                tt   = LABEL_TO_TYPE[label]
                 dur  = int(st.session_state[f"p{pid}_{label}_d"])
                 freq = int(st.session_state[f"p{pid}_{label}_f"])
                 pri  = int(st.session_state[f"p{pid}_{label}_p"])
+                if tt in ACTIVITY_TASKS:
+                    dur  = max(1, round(dur  * e_dur * a_dur))
+                    freq = max(1, round(freq * a_freq))
                 task = Task(tt, duration_minutes=dur, frequency=freq, priority=pri)
                 if tt == TaskType.FEEDING:
                     feeding_task = task

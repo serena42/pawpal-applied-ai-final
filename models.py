@@ -89,6 +89,32 @@ PET_EMOJI: dict[str, str] = {
     "other":  "🐾",
 }
 
+# Energy and age adjustment multipliers applied to activity tasks.
+ENERGY_DURATION_MULT: dict[str, float] = {
+    "low":       0.8,
+    "medium":    1.0,
+    "high":      1.2,
+    "very_high": 1.5,
+}
+
+AGE_DURATION_MULT: dict[str, float] = {
+    "puppy":  0.75,
+    "adult":  1.0,
+    "senior": 0.8,
+}
+
+AGE_FREQUENCY_MULT: dict[str, float] = {
+    "puppy":  1.5,
+    "adult":  1.0,
+    "senior": 0.8,
+}
+
+# Only exercise/enrichment tasks scale with energy and age; care tasks do not.
+ACTIVITY_TASKS: frozenset = frozenset({
+    TaskType.WALK, TaskType.FETCH, TaskType.PLAYTIME,
+    TaskType.TRAINING, TaskType.ENRICHMENT, TaskType.SOCIALIZING,
+})
+
 # Suggested default tasks per pet type, shown pre-selected in the UI.
 PET_TASK_DEFAULTS: dict[str, list[TaskType]] = {
     "dog":     [TaskType.WALK, TaskType.FEEDING, TaskType.TRAINING, TaskType.FETCH],
@@ -164,9 +190,11 @@ class Owner:
 
 
 class Pet:
-    def __init__(self, name: str, pet_type: str):
+    def __init__(self, name: str, pet_type: str, energy_level: str = "medium", age_group: str = "adult"):
         self.name = name
         self.pet_type = pet_type
+        self.energy_level = energy_level
+        self.age_group = age_group
         self.tasks: list[Task] = []
 
     def add_task(self, task: Task) -> None:
@@ -177,7 +205,7 @@ class Pet:
         return sorted(self.tasks, key=lambda t: t.priority)
 
     def __repr__(self) -> str:
-        return f"Pet({self.name}, {self.pet_type}, {len(self.tasks)} tasks)"
+        return f"Pet({self.name}, {self.pet_type}, {self.energy_level}, {self.age_group}, {len(self.tasks)} tasks)"
 
 
 class ScheduledTask:

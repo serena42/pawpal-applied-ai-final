@@ -1,5 +1,5 @@
 """
-Unit tests for conflict_detector.py and agent.py (fix-application logic only).
+Unit tests for conflict_detector.py, agent.py, and breed tuner.
 API-calling methods are not tested here — they require a live key.
 
 Run:
@@ -9,9 +9,13 @@ Run:
 import pytest
 from datetime import time
 
-from models import Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, _to_time
+from models import (
+    Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, Scheduler, _to_time,
+    ENERGY_DURATION_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
+)
 from conflict_detector import detect_conflicts, Conflict
 from agent import ScheduleAgent
+from breed_db import BreedTrie, get_trie
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +229,230 @@ class TestApplyFix:
         plans = single_pet_plans(sts=[st])
         result = agent._apply_fix(plans, "I am not sure what to do here.")
         assert result["Buddy"].scheduled[0].start_time == _to_time(480)
+
+
+# ---------------------------------------------------------------------------
+# BreedTrie tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def small_trie():
+    t = BreedTrie()
+    for b in [
+        {"name": "Labrador Retriever", "energy_level": "high",      "size": "large"},
+        {"name": "Lhasa Apso",         "energy_level": "low",       "size": "small"},
+        {"name": "Border Collie",      "energy_level": "very_high", "size": "medium"},
+        {"name": "Border Terrier",     "energy_level": "high",      "size": "small"},
+        {"name": "Beagle",             "energy_level": "medium",    "size": "small"},
+    ]:
+        t.insert(b)
+    return t
+
+
+class TestBreedTrie:
+    def test_exact_prefix_returns_match(self, small_trie):
+        results = small_trie.search("lab")
+        assert len(results) == 1
+        assert results[0]["name"] == "Labrador Retriever"
+
+    def test_search_case_insensitive(self, small_trie):
+        assert small_trie.search("LAB") == small_trie.search("lab")
+
+    def test_multi_match_prefix(self, small_trie):
+        results = small_trie.search("bor")
+        names = {r["name"] for r in results}
+        assert "Border Collie" in names
+        assert "Border Terrier" in names
+
+    def test_no_match_returns_empty(self, small_trie):
+        assert small_trie.search("xyz") == []
+
+    def test_max_results_respected(self, small_trie):
+        results = small_trie.search("b", max_results=1)
+        assert len(results) <= 1
+
+    def test_result_contains_energy_and_size(self, small_trie):
+        result = small_trie.search("beagle")[0]
+        assert result["energy_level"] == "medium"
+        assert result["size"] == "small"
+
+    def test_full_name_prefix_returns_breed(self, small_trie):
+        results = small_trie.search("lhasa apso")
+        assert len(results) == 1
+        assert results[0]["name"] == "Lhasa Apso"
+
+    def test_empty_prefix_returns_all_up_to_limit(self, small_trie):
+        results = small_trie.search("", max_results=10)
+        assert len(results) == 5
+
+    def test_get_trie_loads_50_breeds(self):
+        trie = get_trie()
+        all_breeds = trie.search("", max_results=100)
+        assert len(all_breeds) == 50
+
+    def test_get_trie_is_singleton(self):
+        assert get_trie() is get_trie()
+
+
+# ---------------------------------------------------------------------------
+# Pet breed attributes tests
+# ---------------------------------------------------------------------------
+
+class TestPetBreedAttributes:
+    def test_default_energy_level(self):
+        assert Pet("Buddy", "dog").energy_level == "medium"
+
+    def test_default_age_group(self):
+        assert Pet("Buddy", "dog").age_group == "adult"
+
+    def test_custom_energy_level(self):
+        p = Pet("Rex", "dog", energy_level="very_high")
+        assert p.energy_level == "very_high"
+
+    def test_custom_age_group(self):
+        p = Pet("Luna", "cat", age_group="senior")
+        assert p.age_group == "senior"
+
+    def test_all_fields_stored(self):
+        p = Pet("Max", "dog", energy_level="high", age_group="puppy")
+        assert p.name == "Max"
+        assert p.pet_type == "dog"
+        assert p.energy_level == "high"
+        assert p.age_group == "puppy"
+
+
+# ---------------------------------------------------------------------------
+# Multiplier constant tests
+# ---------------------------------------------------------------------------
+
+class TestMultiplierConstants:
+    def test_energy_duration_ordering(self):
+        m = ENERGY_DURATION_MULT
+        assert m["low"] < m["medium"] < m["high"] < m["very_high"]
+
+    def test_medium_energy_is_baseline(self):
+        assert ENERGY_DURATION_MULT["medium"] == 1.0
+
+    def test_age_duration_adult_is_baseline(self):
+        assert AGE_DURATION_MULT["adult"] == 1.0
+
+    def test_puppy_and_senior_reduce_duration(self):
+        assert AGE_DURATION_MULT["puppy"] < 1.0
+        assert AGE_DURATION_MULT["senior"] < 1.0
+
+    def test_puppy_frequency_higher_than_adult(self):
+        assert AGE_FREQUENCY_MULT["puppy"] > AGE_FREQUENCY_MULT["adult"]
+
+    def test_senior_frequency_lower_than_adult(self):
+        assert AGE_FREQUENCY_MULT["senior"] < AGE_FREQUENCY_MULT["adult"]
+
+    def test_walk_is_activity_task(self):
+        assert TaskType.WALK in ACTIVITY_TASKS
+
+    def test_fetch_is_activity_task(self):
+        assert TaskType.FETCH in ACTIVITY_TASKS
+
+    def test_feeding_is_not_activity_task(self):
+        assert TaskType.FEEDING not in ACTIVITY_TASKS
+
+    def test_medication_is_not_activity_task(self):
+        assert TaskType.MEDICATION not in ACTIVITY_TASKS
+
+    def test_grooming_is_not_activity_task(self):
+        assert TaskType.GROOMING not in ACTIVITY_TASKS
+
+
+# ---------------------------------------------------------------------------
+# Multiplier application logic tests
+# ---------------------------------------------------------------------------
+
+def _apply(dur: int, freq: int, tt: TaskType, energy: str, age: str):
+    """Mirror of the multiplier logic in app.py generate section."""
+    if tt in ACTIVITY_TASKS:
+        e_dur  = ENERGY_DURATION_MULT.get(energy, 1.0)
+        a_dur  = AGE_DURATION_MULT.get(age, 1.0)
+        a_freq = AGE_FREQUENCY_MULT.get(age, 1.0)
+        dur    = max(1, round(dur  * e_dur * a_dur))
+        freq   = max(1, round(freq * a_freq))
+    return dur, freq
+
+
+class TestMultiplierApplication:
+    def test_high_energy_extends_walk_duration(self):
+        dur, _ = _apply(30, 1, TaskType.WALK, "high", "adult")
+        assert dur == round(30 * 1.2)
+
+    def test_very_high_energy_extends_walk(self):
+        dur, _ = _apply(30, 1, TaskType.WALK, "very_high", "adult")
+        assert dur == round(30 * 1.5)
+
+    def test_low_energy_reduces_walk(self):
+        dur, _ = _apply(30, 1, TaskType.WALK, "low", "adult")
+        assert dur == round(30 * 0.8)
+
+    def test_medium_energy_no_change(self):
+        dur, freq = _apply(30, 2, TaskType.WALK, "medium", "adult")
+        assert dur == 30
+        assert freq == 2
+
+    def test_puppy_increases_frequency(self):
+        _, freq = _apply(30, 2, TaskType.WALK, "medium", "puppy")
+        assert freq == round(2 * 1.5)
+
+    def test_senior_reduces_duration(self):
+        dur, _ = _apply(30, 2, TaskType.WALK, "medium", "senior")
+        assert dur == round(30 * 0.8)
+
+    def test_senior_reduces_frequency(self):
+        _, freq = _apply(4, 4, TaskType.PLAYTIME, "medium", "senior")
+        assert freq == round(4 * 0.8)
+
+    def test_high_energy_puppy_combined(self):
+        dur, freq = _apply(30, 2, TaskType.WALK, "high", "puppy")
+        assert dur  == round(30 * 1.2 * 0.75)
+        assert freq == round(2  * 1.5)
+
+    def test_feeding_unaffected_by_energy(self):
+        dur, freq = _apply(15, 2, TaskType.FEEDING, "very_high", "puppy")
+        assert dur  == 15
+        assert freq == 2
+
+    def test_medication_unaffected_by_energy(self):
+        dur, freq = _apply(5, 1, TaskType.MEDICATION, "very_high", "senior")
+        assert dur  == 5
+        assert freq == 1
+
+    def test_duration_never_below_one(self):
+        dur, _ = _apply(1, 1, TaskType.WALK, "low", "senior")
+        assert dur >= 1
+
+
+# ---------------------------------------------------------------------------
+# Scheduler integration: energy/age multipliers affect plan task durations
+# ---------------------------------------------------------------------------
+
+class TestSchedulerWithBreedTuner:
+    def _make_plan(self, energy: str, age: str, base_dur: int = 30, base_freq: int = 1):
+        owner = Owner("Tester")
+        owner.add_window(time(8, 0), time(20, 0))
+        pet = Pet("Buddy", "dog", energy_level=energy, age_group=age)
+        dur, freq = _apply(base_dur, base_freq, TaskType.WALK, energy, age)
+        pet.add_task(Task(TaskType.WALK, duration_minutes=dur, frequency=freq))
+        owner.add_pet(pet)
+        return Scheduler(owner, pet).generate_plan()
+
+    def test_very_high_energy_walk_longer_than_low(self):
+        plan_hi  = self._make_plan("very_high", "adult")
+        plan_low = self._make_plan("low", "adult")
+        dur_hi  = plan_hi.scheduled[0].task.duration_minutes
+        dur_low = plan_low.scheduled[0].task.duration_minutes
+        assert dur_hi > dur_low
+
+    def test_puppy_walk_scheduled_more_frequently(self):
+        plan_puppy = self._make_plan("medium", "puppy", base_freq=2)
+        plan_adult = self._make_plan("medium", "adult", base_freq=2)
+        assert len(plan_puppy.scheduled) >= len(plan_adult.scheduled)
+
+    def test_medium_adult_walk_uses_base_duration(self):
+        plan = self._make_plan("medium", "adult", base_dur=30)
+        assert plan.scheduled[0].task.duration_minutes == 30

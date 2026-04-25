@@ -376,7 +376,7 @@ if "_plans" in st.session_state:
         key=lambda x: x[0].start_time,
     )
     st.header("Daily Schedule")
-    suggested_slots = detect_suggested_slots(all_plans)
+    suggested_slots = detect_suggested_slots(all_plans, owner.pets)
 
     if combined:
         for entry, pet_name in combined:

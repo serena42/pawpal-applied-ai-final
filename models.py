@@ -115,6 +115,14 @@ ACTIVITY_TASKS: frozenset = frozenset({
     TaskType.TRAINING, TaskType.ENRICHMENT, TaskType.SOCIALIZING,
 })
 
+# Minimum gap (minutes) required between consecutive occurrences of any activity task.
+# Puppies need frequent short sessions; seniors need longer rests between.
+_MIN_ACTIVITY_GAP: dict[str, int] = {
+    "puppy":  60,   # 1 hour — puppies need frequent outings but shorter rests
+    "adult":  180,  # 3 hours between activity sessions for adult dogs
+    "senior": 240,  # 4 hours — fewer, more spaced sessions for seniors
+}
+
 # Suggested default tasks per pet type, shown pre-selected in the UI.
 PET_TASK_DEFAULTS: dict[str, list[TaskType]] = {
     "dog":     [TaskType.WALK, TaskType.FEEDING, TaskType.TRAINING, TaskType.FETCH],
@@ -280,8 +288,12 @@ class Scheduler:
         for task in ordered:
             scheduled_count = 0
             interval = day_span // task.frequency if task.frequency > 1 else day_span
-            # After placing an occurrence, prefer starting the next one past that window
-            # so multi-frequency tasks spread across windows rather than cluster.
+            # Minimum gap between consecutive occurrences of this task.
+            min_gap = (
+                _MIN_ACTIVITY_GAP.get(self.pet.age_group, 180)
+                if task.task_type in ACTIVITY_TASKS else 0
+            )
+            # Earliest time the NEXT occurrence may start (enforces min_gap and window spread).
             advance_past: Optional[int] = None
 
             for i in range(task.frequency):
@@ -289,28 +301,27 @@ class Scheduler:
                 if task.earliest:
                     target = max(target, _mins(task.earliest))
 
-                # First try: respect advance_past to prefer a different window.
+                # First try: respect advance_past (min-gap or window boundary).
                 slot_start = None
                 if advance_past is not None:
                     slot_start = self._find_slot(
                         max(target, advance_past), task.duration_minutes, busy,
                         latest_mins=_mins(task.latest) if task.latest else None,
                     )
-                # Fallback: ignore advance_past, but never schedule back-to-back
-                # with another occurrence of the same task type — leave the slot
-                # open for lower-priority tasks instead.
+                # Fallback: use original target, but reject any slot that would be
+                # too close to an already-scheduled occurrence of the same task type.
                 if slot_start is None:
                     candidate = self._find_slot(
                         target, task.duration_minutes, busy,
                         latest_mins=_mins(task.latest) if task.latest else None,
                     )
                     if candidate is not None:
-                        back_to_back = any(
-                            _mins(s.end_time) == candidate
+                        too_close = any(
+                            candidate < _mins(s.end_time) + min_gap
                             and s.task.task_type == task.task_type
                             for s in plan.scheduled
                         )
-                        if not back_to_back:
+                        if not too_close:
                             slot_start = candidate
 
                 if slot_start is not None:
@@ -325,11 +336,15 @@ class Scheduler:
                     busy.append((slot_start, slot_end))
                     busy.sort()
                     scheduled_count += 1
-                    # Move advance_past to the end of whichever window holds this slot.
-                    for w in windows:
-                        if _mins(w.start) <= slot_start < _mins(w.end):
-                            advance_past = _mins(w.end)
-                            break
+                    # For activity tasks: next occurrence must start at least min_gap later.
+                    # For other tasks: advance past the current window to spread across windows.
+                    if task.task_type in ACTIVITY_TASKS and min_gap > 0:
+                        advance_past = slot_end + min_gap
+                    else:
+                        for w in windows:
+                            if _mins(w.start) <= slot_start < _mins(w.end):
+                                advance_past = _mins(w.end)
+                                break
 
             missed = task.frequency - scheduled_count
             if missed > 0:

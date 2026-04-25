@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from models import _mins, _GAP_THRESHOLDS
+from models import _mins, _GAP_THRESHOLDS, _MIN_ACTIVITY_GAP, ACTIVITY_TASKS
 
 
 @dataclass
@@ -145,12 +145,13 @@ class SuggestedSlot:
     reason: str
 
 
-def detect_suggested_slots(plans: dict) -> list[SuggestedSlot]:
+def detect_suggested_slots(plans: dict, pets: list = None) -> list[SuggestedSlot]:
     """
-    Return suggested availability windows wherever same-type tasks are back-to-back.
-    The recommended slot sits in the largest gap before the cluster.
+    Return suggested availability windows wherever same-type tasks violate the
+    minimum inter-session gap. The recommended slot sits in the gap before the cluster.
     """
     from models import _to_time
+    pet_map = {p.name: p for p in (pets or [])}
     slots = []
 
     for pet_name, plan in plans.items():
@@ -158,23 +159,26 @@ def detect_suggested_slots(plans: dict) -> list[SuggestedSlot]:
         for st in plan.scheduled:
             by_type.setdefault(st.task.task_type, []).append(st)
 
+        pet = pet_map.get(pet_name)
         for task_type, occs in by_type.items():
             if len(occs) < 2:
                 continue
             occs.sort(key=lambda s: _mins(s.start_time))
 
+            # Determine required minimum gap for this task type / age group.
+            if task_type in ACTIVITY_TASKS and pet:
+                min_gap = _MIN_ACTIVITY_GAP.get(pet.age_group, 180)
+            else:
+                min_gap = 0
+
             for i in range(len(occs) - 1):
-                gap = _mins(occs[i + 1].start_time) - _mins(occs[i].end_time)
-                if gap > 0:
-                    continue  # not back-to-back
+                actual_gap = _mins(occs[i + 1].start_time) - _mins(occs[i].end_time)
+                if actual_gap >= min_gap:
+                    continue  # gap is acceptable
 
-                # Find the largest gap earlier in the day (before this cluster).
-                cluster_start = _mins(occs[i].start_time)
-                prev_end = _mins(occs[0].end_time) if i == 0 else _mins(occs[i - 1].end_time)
-
-                # Walk back to find the true gap before the cluster block.
+                # Walk back to find the start of this violation cluster.
                 j = i
-                while j > 0 and _mins(occs[j].start_time) == _mins(occs[j - 1].end_time):
+                while j > 0 and (_mins(occs[j].start_time) - _mins(occs[j - 1].end_time)) < min_gap:
                     j -= 1
                 cluster_block_start = _mins(occs[j].start_time)
                 prev_end = _mins(occs[j - 1].end_time) if j > 0 else 0
@@ -184,12 +188,15 @@ def detect_suggested_slots(plans: dict) -> list[SuggestedSlot]:
                     continue
 
                 dur = occs[i].task.duration_minutes
-                earliest_mins = prev_end + 30          # 30 min buffer after last task
-                latest_mins   = cluster_block_start - dur  # must finish before cluster
+                earliest_mins = prev_end + 30
+                # Latest useful = must finish the session AND leave min_gap before the cluster.
+                latest_mins = cluster_block_start - min_gap - dur
                 if latest_mins <= earliest_mins:
                     continue
 
                 suggested_mins = (earliest_mins + latest_mins) // 2
+                gap_h, gap_m = min_gap // 60, min_gap % 60
+                gap_str = f"{gap_h}h" if gap_m == 0 else f"{gap_h}h {gap_m}m"
 
                 slots.append(SuggestedSlot(
                     pet_name=pet_name,
@@ -198,10 +205,10 @@ def detect_suggested_slots(plans: dict) -> list[SuggestedSlot]:
                     latest=_to_time(latest_mins).strftime("%H:%M"),
                     suggested=_to_time(suggested_mins).strftime("%H:%M"),
                     reason=(
-                        f"{task_type.value.capitalize()} occurrences for {pet_name} are "
-                        f"back-to-back. A midday slot between "
-                        f"{_to_time(earliest_mins).strftime('%H:%M')} and "
-                        f"{_to_time(latest_mins).strftime('%H:%M')} would spread them out."
+                        f"{task_type.value.capitalize()} sessions for {pet_name} are "
+                        f"less than {gap_str} apart. A slot ending by "
+                        f"{_to_time(latest_mins + dur).strftime('%H:%M')} would provide "
+                        f"the needed spacing before the {_to_time(cluster_block_start).strftime('%H:%M')} session."
                     ),
                 ))
                 break  # one suggestion per task type per pet

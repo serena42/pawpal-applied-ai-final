@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from models import _mins, _GAP_THRESHOLDS, _MIN_ACTIVITY_GAP, ACTIVITY_TASKS
+from models import _mins, _to_time, _GAP_THRESHOLDS, _MIN_ACTIVITY_GAP, ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP, TaskType
 
 
 @dataclass
@@ -76,7 +76,6 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
         owner_end_mins = max(_mins(w.end) for w in owner.availability_windows)
         for pet_name, st in all_tasks:
             if _mins(st.end_time) > owner_end_mins:
-                from models import _to_time
                 conflicts.append(Conflict(
                     conflict_type="timeout",
                     reason=(
@@ -132,6 +131,28 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
                         ),
                     ))
 
+    # 6. Post-feeding gap: vigorous activity starting within POST_FEEDING_GAP of feeding end.
+    for pet_name, plan in plans.items():
+        feedings = [st for st in plan.scheduled if st.task.task_type == TaskType.FEEDING]
+        vigorous = [st for st in plan.scheduled if st.task.task_type in VIGOROUS_TASKS]
+        for feed_st in feedings:
+            feed_end = _mins(feed_st.end_time)
+            for act_st in vigorous:
+                act_start = _mins(act_st.start_time)
+                if feed_end <= act_start < feed_end + POST_FEEDING_GAP:
+                    gap_min = act_start - feed_end
+                    ok_time = _to_time(feed_end + POST_FEEDING_GAP).strftime("%H:%M")
+                    conflicts.append(Conflict(
+                        conflict_type="post_feeding_gap",
+                        reason=(
+                            f"{act_st.task.name} ({pet_name}) starts at {_t(act_st.start_time)}, "
+                            f"only {gap_min} min after {feed_st.task.name} ends at {_t(feed_st.end_time)} "
+                            f"— vigorous activity too soon after eating risks gastric torsion"
+                        ),
+                        suggested_fix=f"Move {act_st.task.name} to {ok_time} or later",
+                        task_keys=((pet_name, feed_st.task.name), (pet_name, act_st.task.name)),
+                    ))
+
     return conflicts
 
 
@@ -150,7 +171,6 @@ def detect_suggested_slots(plans: dict, pets: list = None) -> list[SuggestedSlot
     Return suggested availability windows wherever same-type tasks violate the
     minimum inter-session gap. The recommended slot sits in the gap before the cluster.
     """
-    from models import _to_time
     pet_map = {p.name: p for p in (pets or [])}
     slots = []
 

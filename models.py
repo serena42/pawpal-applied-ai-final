@@ -115,6 +115,14 @@ ACTIVITY_TASKS: frozenset = frozenset({
     TaskType.TRAINING, TaskType.ENRICHMENT, TaskType.SOCIALIZING,
 })
 
+# Physically vigorous tasks that risk bloat/gastric torsion if done too soon after feeding.
+VIGOROUS_TASKS: frozenset = frozenset({
+    TaskType.WALK, TaskType.FETCH, TaskType.PLAYTIME,
+})
+
+# Minutes of rest required after feeding before a vigorous activity may start.
+POST_FEEDING_GAP: int = 30
+
 # Minimum gap (minutes) required between consecutive occurrences of any activity task.
 # Puppies need frequent short sessions; seniors need longer rests between.
 _MIN_ACTIVITY_GAP: dict[str, int] = {
@@ -324,6 +332,21 @@ class Scheduler:
                         if not too_close:
                             slot_start = candidate
 
+                # Post-feeding gap: push vigorous tasks past the rest window.
+                if slot_start is not None:
+                    for _ in range(len(plan.scheduled) + 1):
+                        ok_from = self._post_feeding_ok_from(
+                            slot_start, task.task_type, plan.scheduled
+                        )
+                        if ok_from is None:
+                            break
+                        slot_start = self._find_slot(
+                            ok_from, task.duration_minutes, busy,
+                            latest_mins=_mins(task.latest) if task.latest else None,
+                        )
+                        if slot_start is None:
+                            break
+
                 if slot_start is not None:
                     slot_end = slot_start + task.duration_minutes
                     dep_names = ", ".join(d.name for d in task.dependencies)
@@ -416,6 +439,19 @@ class Scheduler:
             visit(task)
 
         return ordered
+
+    def _post_feeding_ok_from(
+        self, slot_start: int, task_type: TaskType, scheduled: list
+    ) -> Optional[int]:
+        """If slot_start is within POST_FEEDING_GAP of any feeding end, return earliest OK start."""
+        if task_type not in VIGOROUS_TASKS:
+            return None
+        for st in scheduled:
+            if st.task.task_type == TaskType.FEEDING:
+                feed_end = _mins(st.end_time)
+                if feed_end <= slot_start < feed_end + POST_FEEDING_GAP:
+                    return feed_end + POST_FEEDING_GAP
+        return None
 
     def _fits_in_window(self, task: Task, window: AvailabilityWindow, start_time: time) -> bool:
         """Return True if task can start at start_time and finish within the window."""

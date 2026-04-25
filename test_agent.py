@@ -10,8 +10,9 @@ import pytest
 from datetime import time
 
 from models import (
-    Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, Scheduler, _to_time,
+    Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, Scheduler, _to_time, _mins,
     ENERGY_DURATION_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
+    VIGOROUS_TASKS, POST_FEEDING_GAP,
 )
 from conflict_detector import detect_conflicts, Conflict
 from agent import ScheduleAgent
@@ -456,3 +457,110 @@ class TestSchedulerWithBreedTuner:
     def test_medium_adult_walk_uses_base_duration(self):
         plan = self._make_plan("medium", "adult", base_dur=30)
         assert plan.scheduled[0].task.duration_minutes == 30
+
+
+# ---------------------------------------------------------------------------
+# Fix #1: Post-feeding gap before vigorous activity
+# ---------------------------------------------------------------------------
+
+class TestPostFeedingGapDetection:
+    def test_vigorous_task_immediately_after_feeding_detected(self):
+        owner = make_owner()
+        feed = make_st(TaskType.FEEDING, "Feeding", 480, 15)   # 8:00–8:15
+        fetch = make_st(TaskType.FETCH, "Fetch", 480 + 15, 20) # 8:15–8:35 — 0 min gap
+        plans = single_pet_plans(sts=[feed, fetch])
+        conflicts = detect_conflicts(plans, owner, [])
+        pfg = [c for c in conflicts if c.conflict_type == "post_feeding_gap"]
+        assert len(pfg) == 1
+        assert "Fetch" in pfg[0].reason
+
+    def test_walk_too_soon_after_feeding_detected(self):
+        owner = make_owner()
+        feed = make_st(TaskType.FEEDING, "Feeding", 480, 15)    # 8:00–8:15
+        walk = make_st(TaskType.WALK, "Walk", 495 + 10, 30)     # 8:25–8:55 — 10 min gap
+        plans = single_pet_plans(sts=[feed, walk])
+        conflicts = detect_conflicts(plans, owner, [])
+        pfg = [c for c in conflicts if c.conflict_type == "post_feeding_gap"]
+        assert len(pfg) == 1
+
+    def test_vigorous_task_after_full_gap_no_conflict(self):
+        owner = make_owner()
+        feed = make_st(TaskType.FEEDING, "Feeding", 480, 15)    # 8:00–8:15
+        fetch = make_st(TaskType.FETCH, "Fetch", 480 + 15 + POST_FEEDING_GAP, 20)  # 8:45+
+        plans = single_pet_plans(sts=[feed, fetch])
+        conflicts = detect_conflicts(plans, owner, [])
+        pfg = [c for c in conflicts if c.conflict_type == "post_feeding_gap"]
+        assert len(pfg) == 0
+
+    def test_grooming_not_flagged_after_feeding(self):
+        """Non-vigorous tasks may follow feeding immediately."""
+        owner = make_owner()
+        feed = make_st(TaskType.FEEDING, "Feeding", 480, 15)
+        groom = make_st(TaskType.GROOMING, "Grooming", 495, 30)  # 8:15 — no gap needed
+        plans = single_pet_plans(sts=[feed, groom])
+        conflicts = detect_conflicts(plans, owner, [])
+        pfg = [c for c in conflicts if c.conflict_type == "post_feeding_gap"]
+        assert len(pfg) == 0
+
+    def test_suggested_fix_mentions_safe_time(self):
+        owner = make_owner()
+        feed = make_st(TaskType.FEEDING, "Feeding", 480, 15)    # ends 8:15
+        fetch = make_st(TaskType.FETCH, "Fetch", 495, 20)       # starts 8:15
+        plans = single_pet_plans(sts=[feed, fetch])
+        conflicts = detect_conflicts(plans, owner, [])
+        pfg = [c for c in conflicts if c.conflict_type == "post_feeding_gap"]
+        assert len(pfg) == 1
+        assert "08:45" in pfg[0].suggested_fix  # 8:15 + 30 min = 8:45
+
+
+class TestSchedulerEnforcesPostFeedingGap:
+    def _make_plan_with(self, task_types):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        for tt in task_types:
+            dog.add_task(Task(tt, frequency=1))
+        owner.add_pet(dog)
+        return Scheduler(owner, dog).generate_plan()
+
+    def test_fetch_not_scheduled_within_gap_of_feeding(self):
+        plan = self._make_plan_with([TaskType.FEEDING, TaskType.FETCH])
+        feedings = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
+        fetches  = [s for s in plan.scheduled if s.task.task_type == TaskType.FETCH]
+        for feed in feedings:
+            for fetch in fetches:
+                feed_end = _mins(feed.end_time)
+                fetch_start = _mins(fetch.start_time)
+                if fetch_start >= feed_end:
+                    assert fetch_start >= feed_end + POST_FEEDING_GAP, (
+                        f"Fetch starts at {fetch.start_time}, only "
+                        f"{fetch_start - feed_end} min after feeding ends at {feed.end_time}"
+                    )
+
+    def test_walk_not_scheduled_within_gap_of_feeding(self):
+        plan = self._make_plan_with([TaskType.FEEDING, TaskType.WALK])
+        feedings = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
+        walks    = [s for s in plan.scheduled if s.task.task_type == TaskType.WALK]
+        for feed in feedings:
+            for walk in walks:
+                feed_end = _mins(feed.end_time)
+                walk_start = _mins(walk.start_time)
+                if walk_start >= feed_end:
+                    assert walk_start >= feed_end + POST_FEEDING_GAP
+
+    def test_playtime_not_scheduled_within_gap_of_feeding(self):
+        plan = self._make_plan_with([TaskType.FEEDING, TaskType.PLAYTIME])
+        feedings  = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
+        playtimes = [s for s in plan.scheduled if s.task.task_type == TaskType.PLAYTIME]
+        for feed in feedings:
+            for play in playtimes:
+                feed_end = _mins(feed.end_time)
+                play_start = _mins(play.start_time)
+                if play_start >= feed_end:
+                    assert play_start >= feed_end + POST_FEEDING_GAP
+
+    def test_vigorous_tasks_is_subset_of_activity_tasks(self):
+        assert VIGOROUS_TASKS.issubset(ACTIVITY_TASKS)
+
+    def test_post_feeding_gap_is_positive(self):
+        assert POST_FEEDING_GAP > 0

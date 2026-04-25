@@ -59,7 +59,7 @@ def run_scenario(title: str, description: str, plans: dict, owner: Owner) -> Non
 
     print("\nAgent repair loop:")
     agent  = ScheduleAgent()
-    plans, history = agent.fix_schedule(plans, owner, owner.pets)
+    plans, history, _ = agent.fix_schedule(plans, owner, owner.pets)
 
     for step in history:
         print(f"  Iteration {step['iteration'] + 1}: "

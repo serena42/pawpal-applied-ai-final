@@ -16,7 +16,7 @@ from models import (
     ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP,
     _MIN_MED_FEEDING_GAP, _MIN_CARE_TASK_GAP,
 )
-from conflict_detector import detect_conflicts, Conflict
+from conflict_detector import detect_conflicts, Conflict, suggest_coverage_windows
 from agent import ScheduleAgent
 from breed_db import BreedTrie, get_trie
 
@@ -875,3 +875,151 @@ class TestSchedulerRespectsWindowConstraints:
         grooms = [s for s in plan.scheduled if s.task.task_type == TaskType.GROOMING]
         assert grooms
         assert _mins(grooms[0].end_time) <= _mins(time(10, 0))
+
+
+# ---------------------------------------------------------------------------
+# Coverage window suggestions
+# ---------------------------------------------------------------------------
+
+def _make_split_owner(morning_end=time(9, 0), evening_start=time(17, 0)):
+    """Owner available 8–9 and 17–20 — big midday gap."""
+    o = Owner("Jordan")
+    o.add_window(time(8, 0), morning_end)
+    o.add_window(evening_start, time(20, 0))
+    return o
+
+
+class TestSuggestCoverageWindows:
+    def test_feeding_gap_produces_pet_sitter_suggestion(self):
+        owner = _make_split_owner()
+        dog = Pet("Buddy", "dog")
+        # Schedule feedings at 8:00 and 18:00 — 9-hour gap exceeds 8h threshold.
+        feed1 = make_st(TaskType.FEEDING, "Feeding", 480, 15)   # 8:00–8:15
+        feed2 = make_st(TaskType.FEEDING, "Feeding", 18 * 60, 15)  # 18:00–18:15
+        plan = DailyPlan()
+        plan.scheduled.extend([feed1, feed2])
+        plans = {"Buddy": plan}
+        owner.add_pet(dog)
+        suggestions = suggest_coverage_windows(plans, owner, [dog])
+        pet_sitters = [s for s in suggestions if s.service_type == "pet_sitter"]
+        assert len(pet_sitters) >= 1
+        s = pet_sitters[0]
+        assert s.pet_name == "Buddy"
+        assert "Feeding" in s.tasks
+
+    def test_walk_gap_in_unavailability_block_produces_dog_walker(self):
+        owner = _make_split_owner()  # big 8h midday gap
+        dog = Pet("Buddy", "dog")
+        # Walk before and after the unavailability block.
+        walk1 = make_st(TaskType.WALK, "Walk", 480, 30)     # 8:00–8:30
+        walk2 = make_st(TaskType.WALK, "Walk", 17 * 60, 30) # 17:00–17:30
+        plan = DailyPlan()
+        plan.scheduled.extend([walk1, walk2])
+        plans = {"Buddy": plan}
+        owner.add_pet(dog)
+        suggestions = suggest_coverage_windows(plans, owner, [dog])
+        walkers = [s for s in suggestions if s.service_type == "dog_walker"]
+        assert len(walkers) >= 1
+        w = walkers[0]
+        assert w.pet_name == "Buddy"
+
+    def test_coverage_window_times_fall_within_gap(self):
+        """Suggested start/end must be inside the gap, not outside it."""
+        owner = _make_split_owner(morning_end=time(9, 0), evening_start=time(17, 0))
+        dog = Pet("Buddy", "dog")
+        feed1 = make_st(TaskType.FEEDING, "Feeding", 480, 15)
+        feed2 = make_st(TaskType.FEEDING, "Feeding", 17 * 60, 15)
+        plan = DailyPlan()
+        plan.scheduled.extend([feed1, feed2])
+        plans = {"Buddy": plan}
+        owner.add_pet(dog)
+        suggestions = suggest_coverage_windows(plans, owner, [dog])
+        gap_start_mins = _mins(time(9, 0))
+        gap_end_mins   = _mins(time(17, 0))
+        for s in suggestions:
+            s_start = int(s.start[:2]) * 60 + int(s.start[3:])
+            s_end   = int(s.end[:2]) * 60 + int(s.end[3:])
+            assert s_start >= gap_start_mins, f"Coverage starts before gap: {s.start}"
+            assert s_end   <= gap_end_mins,   f"Coverage ends after gap: {s.end}"
+
+    def test_no_suggestions_when_no_gaps(self):
+        """Continuous single-window owner with well-spaced tasks needs no coverage."""
+        owner = make_owner()  # 8am–8pm, no gap
+        dog = Pet("Buddy", "dog")
+        feed1 = make_st(TaskType.FEEDING, "Feeding", 480, 15)   # 8:00
+        feed2 = make_st(TaskType.FEEDING, "Feeding", 720, 15)   # 12:00 — 3h45m apart, fine
+        plan = DailyPlan()
+        plan.scheduled.extend([feed1, feed2])
+        plans = {"Buddy": plan}
+        owner.add_pet(dog)
+        suggestions = suggest_coverage_windows(plans, owner, [dog])
+        assert suggestions == []
+
+    def test_coverage_windows_have_required_fields(self):
+        owner = _make_split_owner()
+        dog = Pet("Buddy", "dog")
+        feed1 = make_st(TaskType.FEEDING, "Feeding", 480, 15)
+        feed2 = make_st(TaskType.FEEDING, "Feeding", 18 * 60, 15)
+        plan = DailyPlan()
+        plan.scheduled.extend([feed1, feed2])
+        plans = {"Buddy": plan}
+        owner.add_pet(dog)
+        for s in suggest_coverage_windows(plans, owner, [dog]):
+            assert s.service_type in {"dog_walker", "pet_sitter", "owner_window"}
+            assert ":" in s.start and ":" in s.end
+            assert isinstance(s.tasks, list)
+            assert isinstance(s.reason, str) and len(s.reason) > 0
+
+    def test_no_duplicate_suggestions(self):
+        owner = _make_split_owner()
+        dog = Pet("Buddy", "dog")
+        feed1 = make_st(TaskType.FEEDING, "Feeding", 480, 15)
+        feed2 = make_st(TaskType.FEEDING, "Feeding", 18 * 60, 15)
+        plan = DailyPlan()
+        plan.scheduled.extend([feed1, feed2])
+        plans = {"Buddy": plan}
+        owner.add_pet(dog)
+        suggestions = suggest_coverage_windows(plans, owner, [dog])
+        keys = [(s.service_type, s.pet_name, s.start, s.end) for s in suggestions]
+        assert len(keys) == len(set(keys)), "Duplicate coverage suggestions found"
+
+
+class TestPetTaskDefaults:
+    """Verify the task-default callback logic — mirrors _reset_tasks_for_type in app.py."""
+    def _defaults_for(self, pet_type: str):
+        from models import PET_TASK_DEFAULTS, TaskType
+        return [tt for tt in PET_TASK_DEFAULTS.get(pet_type, [TaskType.FEEDING])]
+
+    def test_fish_has_no_walk(self):
+        assert TaskType.WALK not in self._defaults_for("fish")
+
+    def test_fish_has_no_fetch(self):
+        assert TaskType.FETCH not in self._defaults_for("fish")
+
+    def test_fish_has_feeding_and_tank_maintenance(self):
+        defaults = self._defaults_for("fish")
+        assert TaskType.FEEDING in defaults
+        assert TaskType.TANK_MAINTENANCE in defaults
+
+    def test_cat_has_no_walk(self):
+        assert TaskType.WALK not in self._defaults_for("cat")
+
+    def test_cat_has_litter_box(self):
+        assert TaskType.LITTER_BOX in self._defaults_for("cat")
+
+    def test_dog_has_walk(self):
+        assert TaskType.WALK in self._defaults_for("dog")
+
+    def test_dog_has_fetch(self):
+        assert TaskType.FETCH in self._defaults_for("dog")
+
+    def test_snake_has_misting(self):
+        assert TaskType.MISTING in self._defaults_for("snake")
+
+    def test_snake_has_no_walk(self):
+        assert TaskType.WALK not in self._defaults_for("snake")
+
+    def test_all_pet_types_have_feeding(self):
+        for pet_type in ["dog", "cat", "rabbit", "bird", "snake", "iguana", "fish", "other"]:
+            assert TaskType.FEEDING in self._defaults_for(pet_type), \
+                f"{pet_type} defaults missing FEEDING"

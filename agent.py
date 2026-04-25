@@ -2,7 +2,7 @@ import os
 import re
 from google import genai
 from models import _mins, _to_time
-from conflict_detector import detect_conflicts
+from conflict_detector import detect_conflicts, suggest_coverage_windows
 
 
 class ScheduleAgent:
@@ -14,10 +14,12 @@ class ScheduleAgent:
 
     def fix_schedule(self, plans: dict, owner, pets):
         """
-        Iteratively detect conflicts and ask Claude to propose fixes.
+        Iteratively detect conflicts and ask the AI to propose fixes.
 
-        Returns (fixed_plans, history) where history is a list of dicts
-        with keys: iteration, conflicts_found, claude_suggestion.
+        Returns (fixed_plans, history, coverage_windows) where:
+        - history is a list of dicts: {iteration, conflicts_found, claude_suggestion}
+        - coverage_windows is a list of CoverageWindow objects suggesting specific
+          time slots for external services or owner availability expansion.
         """
         history = []
         for iteration in range(self.max_iterations):
@@ -31,7 +33,9 @@ class ScheduleAgent:
                 "claude_suggestion": suggestion,
             })
             plans = self._apply_fix(plans, suggestion)
-        return plans, history
+
+        coverage = suggest_coverage_windows(plans, owner, pets)
+        return plans, history, coverage
 
     def _ask_ai(self, plans: dict, conflicts: list, owner) -> str:
         windows_str = ", ".join(
@@ -47,7 +51,12 @@ class ScheduleAgent:
             "- For OVERLAP conflicts: move the later-starting task to after the earlier task ends.\n"
             "- For DEPENDENCY conflicts: move the DEPENDENT task to after its dependency ends "
             "(never move the dependency itself).\n"
-            "- For GAP conflicts: move the later occurrence to an earlier available window.\n\n"
+            "- For GAP conflicts: move the later occurrence to an earlier available window.\n"
+            "- For POST_FEEDING_GAP conflicts: move the vigorous activity (walk/fetch/playtime) "
+            "to at least 30 minutes after the feeding ends.\n"
+            "- For MED_FEEDING_GAP conflicts: move the medication to at least 10 minutes after "
+            "the feeding ends.\n"
+            "- For WINDOW_VIOLATION conflicts: move the task to within its allowed time window.\n\n"
             "Reply with ONLY one line. Use EXACTLY this format:\n"
             "  Move [task name] from HH:MM to HH:MM\n"
             "Use the task name exactly as shown in the schedule (no pet name in parentheses).\n"

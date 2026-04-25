@@ -8,7 +8,7 @@ from models import (
     ACTIVITY_TASKS,
 )
 from persistence import save, load, save_exists, owner_to_dict
-from conflict_detector import detect_conflicts, detect_suggested_slots, recommend_service
+from conflict_detector import detect_conflicts, detect_suggested_slots, recommend_service, suggest_coverage_windows
 from agent import ScheduleAgent
 from breed_db import get_trie
 
@@ -27,6 +27,14 @@ def _apply_breed(pid: int, breed_map: dict) -> None:
     sel = st.session_state.get(f"p{pid}_breed_suggestion")
     if sel and sel in breed_map:
         st.session_state[f"p{pid}_energy_level"] = breed_map[sel]["energy_level"]
+
+
+def _reset_tasks_for_type(pid: int) -> None:
+    """Called when pet type selectbox changes — resets task list to type-appropriate defaults."""
+    new_type = st.session_state.get(f"p{pid}_type", "dog")
+    st.session_state[f"p{pid}_tasks"] = [
+        TASK_LABELS[tt] for tt in PET_TASK_DEFAULTS.get(new_type, [TaskType.FEEDING])
+    ]
 
 # ---------------------------------------------------------------------------
 # Session state bootstrap (runs once per browser session)
@@ -189,6 +197,8 @@ for pid in st.session_state.pet_ids:
             "Type", PET_TYPES,
             index=PET_TYPES.index(cur_type) if cur_type in PET_TYPES else 0,
             key=f"p{pid}_type",
+            on_change=_reset_tasks_for_type,
+            args=(pid,),
         )
 
     cur_type = st.session_state[f"p{pid}_type"]
@@ -451,11 +461,12 @@ if "_plans" in st.session_state:
         st.divider()
         if st.button("Fix conflicts with AI", type="primary"):
             with st.spinner("AI agent is repairing the schedule..."):
-                fixed_plans, history = ScheduleAgent().fix_schedule(
+                fixed_plans, history, coverage = ScheduleAgent().fix_schedule(
                     all_plans, owner, owner.pets
                 )
             st.session_state["_fixed_plans"]   = fixed_plans
             st.session_state["_agent_history"] = history
+            st.session_state["_coverage"]      = coverage
     else:
         if "_fixed_plans" not in st.session_state:
             has_plan_warnings = any(plan.warnings for plan in all_plans.values())
@@ -505,3 +516,26 @@ if "_fixed_plans" in st.session_state:
             st.info(f"**Recommendation:** {rec}")
     else:
         st.success(f"All conflicts resolved in {len(history)} iteration(s).")
+
+    # Coverage window suggestions — specific time slots for external services.
+    coverage = st.session_state.get("_coverage", [])
+    if coverage:
+        st.divider()
+        st.subheader("Suggested Coverage Windows")
+        st.caption(
+            "These time slots would resolve gaps that can't be fixed by rescheduling alone. "
+            "Add them as owner availability windows or book an external service."
+        )
+        SERVICE_ICON = {"dog_walker": "🦮", "pet_sitter": "🏠", "owner_window": "📅"}
+        SERVICE_LABEL = {"dog_walker": "Dog walker", "pet_sitter": "Pet sitter", "owner_window": "Owner availability"}
+        for cw in coverage:
+            icon  = SERVICE_ICON.get(cw.service_type, "📋")
+            label = SERVICE_LABEL.get(cw.service_type, cw.service_type.replace("_", " ").title())
+            pet_obj  = next((p for p in owner.pets if p.name == cw.pet_name), None)
+            pet_icon = PET_EMOJI.get(pet_obj.pet_type, "") if pet_obj else ""
+            st.info(
+                f"{icon} **{label}** &nbsp; {cw.start} – {cw.end} &nbsp; "
+                f"{pet_icon} _{cw.pet_name}_"
+                + (f" &nbsp; _(covers: {', '.join(cw.tasks)})_" if cw.tasks else "")
+                + f"  \n{cw.reason}"
+            )

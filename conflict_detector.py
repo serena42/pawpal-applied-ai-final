@@ -282,6 +282,147 @@ def detect_suggested_slots(plans: dict, pets: list = None) -> list[SuggestedSlot
     return slots
 
 
+@dataclass
+class CoverageWindow:
+    """A specific time slot where an external service would resolve scheduling issues."""
+    service_type: str   # "dog_walker" | "pet_sitter" | "owner_window"
+    pet_name: str
+    start: str          # "HH:MM"
+    end: str            # "HH:MM"
+    tasks: list
+    reason: str
+
+
+def suggest_coverage_windows(plans: dict, owner, pets) -> list[CoverageWindow]:
+    """
+    Compute specific time windows where a pet sitter, dog walker, or owner
+    availability expansion would resolve unresolvable conflicts.
+
+    Scans for:
+    - Gap violations between recurring care task occurrences (too long between feedings etc.)
+    - Walk/activity gaps that fall entirely inside an owner unavailability block
+    - Tasks dropped from warnings (couldn't be scheduled at all)
+    """
+    pet_map = {p.name: p for p in (pets or [])}
+    suggestions: list[CoverageWindow] = []
+    seen: set = set()
+
+    # Build the list of gaps between owner availability windows.
+    owner_windows = sorted(owner.availability_windows, key=lambda w: _mins(w.start))
+    unavail_blocks = []
+    for i in range(len(owner_windows) - 1):
+        unavail_blocks.append((_mins(owner_windows[i].end), _mins(owner_windows[i + 1].start)))
+
+    def _add(cw: CoverageWindow) -> None:
+        key = (cw.service_type, cw.pet_name, cw.start, cw.end)
+        if key not in seen:
+            seen.add(key)
+            suggestions.append(cw)
+
+    for pet_name, plan in plans.items():
+        by_type: dict = {}
+        for s in plan.scheduled:
+            by_type.setdefault(s.task.task_type, []).append(s)
+
+        # 1. Gap conflicts: two occurrences of the same task type too far apart.
+        for task_type, occs in by_type.items():
+            threshold = _GAP_THRESHOLDS.get(task_type)
+            if threshold is None or len(occs) < 2:
+                continue
+            occs.sort(key=lambda s: _mins(s.start_time))
+            for i in range(len(occs) - 1):
+                gap_start = _mins(occs[i].end_time)
+                gap_end   = _mins(occs[i + 1].start_time)
+                gap       = gap_end - gap_start
+                if gap <= threshold:
+                    continue
+
+                task_dur = occs[i].task.duration_minutes
+                buf      = 30
+                # Place the coverage window in the middle of the gap.
+                ideal_start = gap_start + max(buf, (gap - task_dur - buf) // 2)
+                ideal_end   = min(gap_end - buf, ideal_start + task_dur + buf)
+                # Clamp to a realistic range.
+                ideal_start = max(gap_start + buf, ideal_start)
+                ideal_end   = min(gap_end - buf, ideal_end)
+                if ideal_end <= ideal_start:
+                    ideal_start = gap_start + buf
+                    ideal_end   = min(gap_end, ideal_start + task_dur + buf)
+
+                is_walk   = task_type == TaskType.WALK
+                service   = "dog_walker" if is_walk else "pet_sitter"
+                label     = task_type.value.capitalize()
+                gap_h, gap_m = gap // 60, gap % 60
+                gap_str   = f"{gap_h}h" + (f" {gap_m}m" if gap_m else "")
+
+                _add(CoverageWindow(
+                    service_type=service,
+                    pet_name=pet_name,
+                    start=_to_time(ideal_start).strftime("%H:%M"),
+                    end=_to_time(ideal_end).strftime("%H:%M"),
+                    tasks=[label],
+                    reason=(
+                        f"{label} for {pet_name} has a {gap_str} gap between occurrences "
+                        f"(max recommended {threshold // 60}h). "
+                        f"A {'dog walker' if is_walk else 'pet sitter'} visiting from "
+                        f"{_to_time(ideal_start).strftime('%H:%M')} to "
+                        f"{_to_time(ideal_end).strftime('%H:%M')} would close it."
+                    ),
+                ))
+
+        # 2. Walk/activity gaps inside unavailability blocks.
+        walk_occs = sorted(by_type.get(TaskType.WALK, []), key=lambda s: _mins(s.start_time))
+        for block_start, block_end in unavail_blocks:
+            # Is there a walk on either side of this unavailability block?
+            before = [s for s in walk_occs if _mins(s.end_time) <= block_start]
+            after  = [s for s in walk_occs if _mins(s.start_time) >= block_end]
+            if not before or not after:
+                continue
+            gap = block_end - block_start
+            if gap < 30:
+                continue
+            mid   = (block_start + block_end) // 2
+            cstart = max(block_start + 15, mid - 25)
+            cend   = min(block_end - 15, cstart + 50)
+            _add(CoverageWindow(
+                service_type="dog_walker",
+                pet_name=pet_name,
+                start=_to_time(cstart).strftime("%H:%M"),
+                end=_to_time(cend).strftime("%H:%M"),
+                tasks=["Walk"],
+                reason=(
+                    f"A midday walk for {pet_name} isn't covered during your unavailability "
+                    f"({_to_time(block_start).strftime('%H:%M')}–{_to_time(block_end).strftime('%H:%M')}). "
+                    f"A dog walker from {_to_time(cstart).strftime('%H:%M')} to "
+                    f"{_to_time(cend).strftime('%H:%M')} fills the gap."
+                ),
+            ))
+
+        # 3. Dropped tasks — find an unavailability block that could cover them.
+        dropped_warnings = [w for w in plan.warnings if "not enough availability windows" in w]
+        if dropped_warnings and unavail_blocks:
+            block_start, block_end = max(unavail_blocks, key=lambda b: b[1] - b[0])
+            gap_dur = block_end - block_start
+            if gap_dur >= 30:
+                cstart = block_start + 15
+                cend   = min(block_end - 15, cstart + min(120, gap_dur - 30))
+                _add(CoverageWindow(
+                    service_type="pet_sitter",
+                    pet_name=pet_name,
+                    start=_to_time(cstart).strftime("%H:%M"),
+                    end=_to_time(cend).strftime("%H:%M"),
+                    tasks=[],
+                    reason=(
+                        f"Some tasks for {pet_name} couldn't fit in your available hours. "
+                        f"Adding owner time or a pet sitter from "
+                        f"{_to_time(cstart).strftime('%H:%M')} to "
+                        f"{_to_time(cend).strftime('%H:%M')} would create room for them."
+                    ),
+                ))
+
+    return suggestions
+
+
 def recommend_service(conflicts: list) -> str | None:
     """
     Return a human-readable service recommendation based on unresolved conflicts,

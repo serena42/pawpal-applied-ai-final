@@ -2,7 +2,7 @@ import streamlit as st
 from datetime import time
 from models import Task, TaskType, Owner, Pet, Scheduler, PET_TASK_DEFAULTS, TASK_EMOJI, PET_EMOJI
 from persistence import save, load, save_exists, owner_to_dict
-from conflict_detector import detect_conflicts
+from conflict_detector import detect_conflicts, recommend_service
 from agent import ScheduleAgent
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
@@ -334,6 +334,10 @@ if "_plans" in st.session_state:
             icon = CONFLICT_ICONS.get(c.conflict_type, "")
             st.error(f"{icon} **{c.conflict_type.upper()}** — {c.reason}")
 
+        rec = recommend_service(conflicts)
+        if rec:
+            st.info(f"**Tip:** {rec}")
+
         st.divider()
         if st.button("Fix conflicts with AI", type="primary"):
             with st.spinner("AI agent is repairing the schedule..."):
@@ -382,5 +386,8 @@ if "_fixed_plans" in st.session_state:
     remaining = detect_conflicts(fixed_plans, owner, owner.pets)
     if remaining:
         st.warning(f"{len(remaining)} conflict(s) could not be fully resolved.")
+        rec = recommend_service(remaining)
+        if rec:
+            st.info(f"**Recommendation:** {rec}")
     else:
         st.success(f"All conflicts resolved in {len(history)} iteration(s).")

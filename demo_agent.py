@@ -11,7 +11,7 @@ Run:
 from datetime import time
 
 from models import Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, _to_time, _mins
-from conflict_detector import detect_conflicts
+from conflict_detector import detect_conflicts, recommend_service
 from agent import ScheduleAgent
 
 
@@ -75,6 +75,9 @@ def run_scenario(title: str, description: str, plans: dict, owner: Owner) -> Non
               f"{len(history)} iteration(s).")
         for c in remaining:
             print(f"     [{c.conflict_type.upper()}] {c.reason}")
+        rec = recommend_service(remaining)
+        if rec:
+            print(f"\n  Recommendation: {rec.replace('**', '')}")
     else:
         print(f"\n  All conflicts resolved in {len(history)} iteration(s).")
 

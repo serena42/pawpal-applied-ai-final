@@ -280,16 +280,28 @@ class Scheduler:
         for task in ordered:
             scheduled_count = 0
             interval = day_span // task.frequency if task.frequency > 1 else day_span
+            # After placing an occurrence, prefer starting the next one past that window
+            # so multi-frequency tasks spread across windows rather than cluster.
+            advance_past: Optional[int] = None
 
             for i in range(task.frequency):
                 target = day_start + i * interval
                 if task.earliest:
                     target = max(target, _mins(task.earliest))
 
-                slot_start = self._find_slot(
-                    target, task.duration_minutes, busy,
-                    latest_mins=_mins(task.latest) if task.latest else None,
-                )
+                # First try: respect advance_past to prefer a different window.
+                slot_start = None
+                if advance_past is not None:
+                    slot_start = self._find_slot(
+                        max(target, advance_past), task.duration_minutes, busy,
+                        latest_mins=_mins(task.latest) if task.latest else None,
+                    )
+                # Fallback: ignore advance_past (allows same-window re-use if necessary).
+                if slot_start is None:
+                    slot_start = self._find_slot(
+                        target, task.duration_minutes, busy,
+                        latest_mins=_mins(task.latest) if task.latest else None,
+                    )
 
                 if slot_start is not None:
                     slot_end = slot_start + task.duration_minutes
@@ -303,11 +315,17 @@ class Scheduler:
                     busy.append((slot_start, slot_end))
                     busy.sort()
                     scheduled_count += 1
+                    # Move advance_past to the end of whichever window holds this slot.
+                    for w in windows:
+                        if _mins(w.start) <= slot_start < _mins(w.end):
+                            advance_past = _mins(w.end)
+                            break
 
             missed = task.frequency - scheduled_count
             if missed > 0:
                 plan.warnings.append(
-                    f"Could not schedule '{task.name}' {missed}x — not enough time available."
+                    f"'{task.name}': only {scheduled_count} of {task.frequency} occurrences "
+                    f"scheduled — not enough availability windows."
                 )
 
         plan.warnings.extend(self._check_gaps(plan.scheduled))
@@ -393,16 +411,19 @@ class Scheduler:
             by_type.setdefault(st.task.task_type, []).append(st)
 
         for task_type, occurrences in by_type.items():
-            threshold = _GAP_THRESHOLDS.get(task_type)
-            if threshold is None or len(occurrences) < 2:
-                continue
             occurrences.sort(key=lambda st: _mins(st.start_time))
+            threshold = _GAP_THRESHOLDS.get(task_type)
             for i in range(len(occurrences) - 1):
                 gap = _mins(occurrences[i + 1].start_time) - _mins(occurrences[i].end_time)
-                if gap > threshold:
+                if threshold is not None and gap > threshold:
                     warnings.append(
                         f"'{task_type.value.capitalize()}' gap of {gap // 60}h {gap % 60}m "
-                        f"between occurrences {i + 1} and {i + 2} - consider spacing them more evenly."
+                        f"between occurrences {i + 1} and {i + 2} — consider spacing them more evenly."
+                    )
+                if gap == 0 and len(occurrences) > 1:
+                    warnings.append(
+                        f"'{task_type.value.capitalize()}' occurrences {i + 1} and {i + 2} are "
+                        f"back-to-back — add a midday availability window to spread them out."
                     )
 
         return warnings

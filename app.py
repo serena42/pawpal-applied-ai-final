@@ -410,7 +410,11 @@ if "_plans" in st.session_state:
             st.session_state["_agent_history"] = history
     else:
         if "_fixed_plans" not in st.session_state:
-            st.success("No conflicts — schedule is valid.")
+            has_plan_warnings = any(plan.warnings for plan in all_plans.values())
+            if has_plan_warnings:
+                st.info("No scheduling conflicts detected, but some tasks could not be fully scheduled — see warnings above.")
+            else:
+                st.success("No conflicts — schedule is valid.")
 
 # ---------------------------------------------------------------------------
 # AI-repaired schedule (displayed after agent runs)

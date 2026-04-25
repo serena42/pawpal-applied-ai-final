@@ -135,6 +135,80 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
     return conflicts
 
 
+@dataclass
+class SuggestedSlot:
+    pet_name: str
+    task_name: str
+    earliest: str   # "HH:MM" — earliest time the slot is useful
+    latest: str     # "HH:MM" — latest time the slot is useful
+    suggested: str  # "HH:MM" — midpoint recommendation
+    reason: str
+
+
+def detect_suggested_slots(plans: dict) -> list[SuggestedSlot]:
+    """
+    Return suggested availability windows wherever same-type tasks are back-to-back.
+    The recommended slot sits in the largest gap before the cluster.
+    """
+    from models import _to_time
+    slots = []
+
+    for pet_name, plan in plans.items():
+        by_type: dict = {}
+        for st in plan.scheduled:
+            by_type.setdefault(st.task.task_type, []).append(st)
+
+        for task_type, occs in by_type.items():
+            if len(occs) < 2:
+                continue
+            occs.sort(key=lambda s: _mins(s.start_time))
+
+            for i in range(len(occs) - 1):
+                gap = _mins(occs[i + 1].start_time) - _mins(occs[i].end_time)
+                if gap > 0:
+                    continue  # not back-to-back
+
+                # Find the largest gap earlier in the day (before this cluster).
+                cluster_start = _mins(occs[i].start_time)
+                prev_end = _mins(occs[0].end_time) if i == 0 else _mins(occs[i - 1].end_time)
+
+                # Walk back to find the true gap before the cluster block.
+                j = i
+                while j > 0 and _mins(occs[j].start_time) == _mins(occs[j - 1].end_time):
+                    j -= 1
+                cluster_block_start = _mins(occs[j].start_time)
+                prev_end = _mins(occs[j - 1].end_time) if j > 0 else 0
+
+                gap_before = cluster_block_start - prev_end
+                if gap_before <= 0:
+                    continue
+
+                dur = occs[i].task.duration_minutes
+                earliest_mins = prev_end + 30          # 30 min buffer after last task
+                latest_mins   = cluster_block_start - dur  # must finish before cluster
+                if latest_mins <= earliest_mins:
+                    continue
+
+                suggested_mins = (earliest_mins + latest_mins) // 2
+
+                slots.append(SuggestedSlot(
+                    pet_name=pet_name,
+                    task_name=task_type.value.capitalize(),
+                    earliest=_to_time(earliest_mins).strftime("%H:%M"),
+                    latest=_to_time(latest_mins).strftime("%H:%M"),
+                    suggested=_to_time(suggested_mins).strftime("%H:%M"),
+                    reason=(
+                        f"{task_type.value.capitalize()} occurrences for {pet_name} are "
+                        f"back-to-back. A midday slot between "
+                        f"{_to_time(earliest_mins).strftime('%H:%M')} and "
+                        f"{_to_time(latest_mins).strftime('%H:%M')} would spread them out."
+                    ),
+                ))
+                break  # one suggestion per task type per pet
+
+    return slots
+
+
 def recommend_service(conflicts: list) -> str | None:
     """
     Return a human-readable service recommendation based on unresolved conflicts,

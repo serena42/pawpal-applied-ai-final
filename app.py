@@ -6,7 +6,7 @@ from models import (
     ENERGY_DURATION_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
 )
 from persistence import save, load, save_exists, owner_to_dict
-from conflict_detector import detect_conflicts, recommend_service
+from conflict_detector import detect_conflicts, detect_suggested_slots, recommend_service
 from agent import ScheduleAgent
 from breed_db import get_trie
 
@@ -376,6 +376,8 @@ if "_plans" in st.session_state:
         key=lambda x: x[0].start_time,
     )
     st.header("Daily Schedule")
+    suggested_slots = detect_suggested_slots(all_plans)
+
     if combined:
         for entry, pet_name in combined:
             tr = (f"{entry.start_time.strftime('%H:%M')} – "
@@ -384,6 +386,20 @@ if "_plans" in st.session_state:
             pet_obj  = next((p for p in owner.pets if p.name == pet_name), None)
             pet_icon = PET_EMOJI.get(pet_obj.pet_type, "") if pet_obj else ""
             st.markdown(f"**{tr}** &nbsp; {emoji} {entry.task.name} &nbsp; {pet_icon} _{pet_name}_")
+
+            # After the last task before a suggested slot gap, insert the slot banner.
+            entry_end_mins = entry.end_time.hour * 60 + entry.end_time.minute
+            for slot in suggested_slots:
+                if slot.pet_name == pet_name:
+                    slot_earliest_mins = int(slot.earliest[:2]) * 60 + int(slot.earliest[3:])
+                    slot_latest_mins   = int(slot.latest[:2])   * 60 + int(slot.latest[3:])
+                    if slot_earliest_mins <= entry_end_mins <= slot_latest_mins:
+                        st.info(
+                            f"📅 **Suggested {slot.task_name} slot for {slot.pet_name}** &nbsp;|&nbsp; "
+                            f"Earliest: **{slot.earliest}** &nbsp; Latest: **{slot.latest}** &nbsp; "
+                            f"Recommended: **{slot.suggested}**  \n"
+                            f"_{slot.reason}_"
+                        )
     else:
         st.error("No tasks could be scheduled in the available time windows.")
 

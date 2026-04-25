@@ -11,8 +11,10 @@ from datetime import time
 
 from models import (
     Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, Scheduler, _to_time, _mins,
-    ENERGY_DURATION_MULT, ENERGY_FREQUENCY_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
-    VIGOROUS_TASKS, POST_FEEDING_GAP, _MIN_MED_FEEDING_GAP, _MIN_CARE_TASK_GAP,
+    ENERGY_DURATION_MULT, ENERGY_FREQUENCY_MULT,
+    AGE_DURATION_MULT, AGE_FREQUENCY_MULT, AGE_FEEDING_FREQUENCY_MULT,
+    ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP,
+    _MIN_MED_FEEDING_GAP, _MIN_CARE_TASK_GAP,
 )
 from conflict_detector import detect_conflicts, Conflict
 from agent import ScheduleAgent
@@ -376,6 +378,8 @@ def _apply(dur: int, freq: int, tt: TaskType, energy: str, age: str):
         a_freq = AGE_FREQUENCY_MULT.get(age, 1.0)
         dur    = max(1, round(dur  * e_dur * a_dur))
         freq   = max(1, round(freq * e_freq * a_freq))
+    elif tt == TaskType.FEEDING:
+        freq = max(1, round(freq * AGE_FEEDING_FREQUENCY_MULT.get(age, 1.0)))
     return dur, freq
 
 
@@ -415,9 +419,9 @@ class TestMultiplierApplication:
         assert freq == round(2 * ENERGY_FREQUENCY_MULT["high"] * AGE_FREQUENCY_MULT["puppy"])
 
     def test_feeding_unaffected_by_energy(self):
-        dur, freq = _apply(15, 2, TaskType.FEEDING, "very_high", "puppy")
+        dur, freq = _apply(15, 2, TaskType.FEEDING, "very_high", "adult")
         assert dur  == 15
-        assert freq == 2
+        assert freq == 2  # energy does not affect feeding frequency; only age does
 
     def test_medication_unaffected_by_energy(self):
         dur, freq = _apply(5, 1, TaskType.MEDICATION, "very_high", "senior")
@@ -747,3 +751,42 @@ class TestSchedulerEnforcesCareTaskGap:
         starts = self._feeding_starts(plan)
         if len(starts) == 2:
             assert starts[1] - starts[0] >= _MIN_CARE_TASK_GAP[TaskType.FEEDING]
+
+
+# ---------------------------------------------------------------------------
+# Fix #5: Feeding frequency scales by age group
+# ---------------------------------------------------------------------------
+
+class TestFeedingFrequencyByAge:
+    def test_puppy_gets_more_feedings_than_adult(self):
+        _, freq_puppy = _apply(15, 2, TaskType.FEEDING, "medium", "puppy")
+        _, freq_adult = _apply(15, 2, TaskType.FEEDING, "medium", "adult")
+        assert freq_puppy > freq_adult
+
+    def test_adult_feeding_frequency_unchanged(self):
+        _, freq = _apply(15, 2, TaskType.FEEDING, "medium", "adult")
+        assert freq == 2
+
+    def test_senior_gets_more_feedings_than_adult(self):
+        _, freq_senior = _apply(15, 2, TaskType.FEEDING, "medium", "senior")
+        _, freq_adult  = _apply(15, 2, TaskType.FEEDING, "medium", "adult")
+        assert freq_senior >= freq_adult
+
+    def test_feeding_duration_unaffected_by_age(self):
+        dur_puppy, _ = _apply(15, 2, TaskType.FEEDING, "medium", "puppy")
+        dur_adult, _ = _apply(15, 2, TaskType.FEEDING, "medium", "adult")
+        assert dur_puppy == dur_adult == 15
+
+    def test_feeding_frequency_unaffected_by_energy(self):
+        _, freq_hi  = _apply(15, 2, TaskType.FEEDING, "very_high", "adult")
+        _, freq_low = _apply(15, 2, TaskType.FEEDING, "low", "adult")
+        assert freq_hi == freq_low == 2
+
+    def test_feeding_frequency_never_below_one(self):
+        _, freq = _apply(15, 1, TaskType.FEEDING, "medium", "puppy")
+        assert freq >= 1
+
+    def test_age_feeding_frequency_mult_constants(self):
+        assert AGE_FEEDING_FREQUENCY_MULT["puppy"] > AGE_FEEDING_FREQUENCY_MULT["adult"]
+        assert AGE_FEEDING_FREQUENCY_MULT["adult"] == 1.0
+        assert AGE_FEEDING_FREQUENCY_MULT["senior"] >= AGE_FEEDING_FREQUENCY_MULT["adult"]

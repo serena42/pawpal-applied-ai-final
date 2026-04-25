@@ -109,6 +109,14 @@ AGE_FREQUENCY_MULT: dict[str, float] = {
     "senior": 0.8,
 }
 
+# Feeding frequency scales differently from activity frequency:
+# puppies need 3-4 small meals/day; seniors benefit from 3 smaller meals.
+AGE_FEEDING_FREQUENCY_MULT: dict[str, float] = {
+    "puppy":  1.5,   # 2 base → 3 meals
+    "adult":  1.0,   # 2 meals — no change
+    "senior": 1.25,  # 2 base → 2-3 meals (smaller, more frequent)
+}
+
 ENERGY_FREQUENCY_MULT: dict[str, float] = {
     "low":       0.8,
     "medium":    1.0,

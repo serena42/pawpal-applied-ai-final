@@ -133,6 +133,14 @@ POST_FEEDING_GAP: int = 30
 # Minimum minutes after feeding ends before medication may start.
 _MIN_MED_FEEDING_GAP: int = 10
 
+# Minimum gap (minutes) enforced between consecutive occurrences of recurring care tasks.
+_MIN_CARE_TASK_GAP: dict[TaskType, int] = {
+    TaskType.FEEDING:    4 * 60,  # 4 hours — prevents overfeeding / stomach upset
+    TaskType.MEDICATION: 4 * 60,  # 4 hours — prevents accidental double-dose
+    TaskType.LITTER_BOX: 2 * 60,  # 2 hours — practical hygiene minimum
+    TaskType.MISTING:    2 * 60,  # 2 hours — reptile/plant care minimum
+}
+
 # Minimum gap (minutes) required between consecutive occurrences of any activity task.
 # Puppies need frequent short sessions; seniors need longer rests between.
 _MIN_ACTIVITY_GAP: dict[str, int] = {
@@ -307,10 +315,10 @@ class Scheduler:
             scheduled_count = 0
             interval = day_span // task.frequency if task.frequency > 1 else day_span
             # Minimum gap between consecutive occurrences of this task.
-            min_gap = (
-                _MIN_ACTIVITY_GAP.get(self.pet.age_group, 180)
-                if task.task_type in ACTIVITY_TASKS else 0
-            )
+            if task.task_type in ACTIVITY_TASKS:
+                min_gap = _MIN_ACTIVITY_GAP.get(self.pet.age_group, 180)
+            else:
+                min_gap = _MIN_CARE_TASK_GAP.get(task.task_type, 0)
             # Earliest time the NEXT occurrence may start (enforces min_gap and window spread).
             advance_past: Optional[int] = None
 

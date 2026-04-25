@@ -12,7 +12,7 @@ from datetime import time
 from models import (
     Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, Scheduler, _to_time, _mins,
     ENERGY_DURATION_MULT, ENERGY_FREQUENCY_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
-    VIGOROUS_TASKS, POST_FEEDING_GAP, _MIN_MED_FEEDING_GAP,
+    VIGOROUS_TASKS, POST_FEEDING_GAP, _MIN_MED_FEEDING_GAP, _MIN_CARE_TASK_GAP,
 )
 from conflict_detector import detect_conflicts, Conflict
 from agent import ScheduleAgent
@@ -685,3 +685,65 @@ class TestSchedulerEnforcedMedFeedingGap:
         feed_end  = _mins(feed_sts[0].end_time)
         med_start = _mins(med_sts[0].start_time)
         assert med_start >= feed_end + _MIN_MED_FEEDING_GAP
+
+
+# ---------------------------------------------------------------------------
+# Fix #4: Enforce minimum gap between care task occurrences
+# ---------------------------------------------------------------------------
+
+class TestCareTaskGapConstants:
+    def test_feeding_gap_is_at_least_4_hours(self):
+        assert _MIN_CARE_TASK_GAP[TaskType.FEEDING] >= 4 * 60
+
+    def test_medication_gap_is_at_least_4_hours(self):
+        assert _MIN_CARE_TASK_GAP[TaskType.MEDICATION] >= 4 * 60
+
+    def test_litter_box_gap_is_at_least_2_hours(self):
+        assert _MIN_CARE_TASK_GAP[TaskType.LITTER_BOX] >= 2 * 60
+
+    def test_misting_gap_is_at_least_2_hours(self):
+        assert _MIN_CARE_TASK_GAP[TaskType.MISTING] >= 2 * 60
+
+
+class TestSchedulerEnforcesCareTaskGap:
+    def _feeding_starts(self, plan):
+        return sorted(
+            _mins(s.start_time)
+            for s in plan.scheduled if s.task.task_type == TaskType.FEEDING
+        )
+
+    def test_two_feedings_spaced_by_min_gap(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        dog.add_task(Task(TaskType.FEEDING, frequency=2))
+        owner.add_pet(dog)
+        plan = Scheduler(owner, dog).generate_plan()
+        starts = self._feeding_starts(plan)
+        assert len(starts) == 2
+        assert starts[1] - starts[0] >= _MIN_CARE_TASK_GAP[TaskType.FEEDING]
+
+    def test_three_feedings_all_spaced_by_min_gap(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(7, 0), time(23, 0))  # 16-hour window for 3 feedings
+        dog = Pet("Mochi", "dog")
+        dog.add_task(Task(TaskType.FEEDING, frequency=3))
+        owner.add_pet(dog)
+        plan = Scheduler(owner, dog).generate_plan()
+        starts = self._feeding_starts(plan)
+        assert len(starts) == 3
+        min_gap = _MIN_CARE_TASK_GAP[TaskType.FEEDING]
+        for i in range(len(starts) - 1):
+            assert starts[i + 1] - starts[i] >= min_gap
+
+    def test_feeding_not_back_to_back_in_tight_window(self):
+        """Even with a short window, scheduler should never place two feedings immediately adjacent."""
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(20, 0))
+        dog = Pet("Mochi", "dog")
+        dog.add_task(Task(TaskType.FEEDING, frequency=2))
+        owner.add_pet(dog)
+        plan = Scheduler(owner, dog).generate_plan()
+        starts = self._feeding_starts(plan)
+        if len(starts) == 2:
+            assert starts[1] - starts[0] >= _MIN_CARE_TASK_GAP[TaskType.FEEDING]

@@ -296,12 +296,22 @@ class Scheduler:
                         max(target, advance_past), task.duration_minutes, busy,
                         latest_mins=_mins(task.latest) if task.latest else None,
                     )
-                # Fallback: ignore advance_past (allows same-window re-use if necessary).
+                # Fallback: ignore advance_past, but never schedule back-to-back
+                # with another occurrence of the same task type — leave the slot
+                # open for lower-priority tasks instead.
                 if slot_start is None:
-                    slot_start = self._find_slot(
+                    candidate = self._find_slot(
                         target, task.duration_minutes, busy,
                         latest_mins=_mins(task.latest) if task.latest else None,
                     )
+                    if candidate is not None:
+                        back_to_back = any(
+                            _mins(s.end_time) == candidate
+                            and s.task.task_type == task.task_type
+                            for s in plan.scheduled
+                        )
+                        if not back_to_back:
+                            slot_start = candidate
 
                 if slot_start is not None:
                     slot_end = slot_start + task.duration_minutes

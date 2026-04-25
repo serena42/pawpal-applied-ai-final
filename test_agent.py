@@ -790,3 +790,88 @@ class TestFeedingFrequencyByAge:
         assert AGE_FEEDING_FREQUENCY_MULT["puppy"] > AGE_FEEDING_FREQUENCY_MULT["adult"]
         assert AGE_FEEDING_FREQUENCY_MULT["adult"] == 1.0
         assert AGE_FEEDING_FREQUENCY_MULT["senior"] >= AGE_FEEDING_FREQUENCY_MULT["adult"]
+
+
+# ---------------------------------------------------------------------------
+# Fix #6: Window violation detection (earliest/latest per task)
+# ---------------------------------------------------------------------------
+
+class TestWindowViolationDetection:
+    def test_task_before_earliest_detected(self):
+        owner = make_owner()
+        task = Task(TaskType.WALK, name="Walk", duration_minutes=30,
+                    earliest=time(10, 0))
+        st_early = ScheduledTask(task, time(8, 0), time(8, 30), "test")  # before earliest
+        plans = single_pet_plans(sts=[st_early])
+        conflicts = detect_conflicts(plans, owner, [])
+        wv = [c for c in conflicts if c.conflict_type == "window_violation"]
+        assert len(wv) == 1
+        assert "before its earliest" in wv[0].reason
+
+    def test_task_after_latest_detected(self):
+        owner = make_owner()
+        task = Task(TaskType.MEDICATION, name="Medication", duration_minutes=5,
+                    latest=time(9, 0))
+        st_late = ScheduledTask(task, time(9, 0), time(9, 5), "test")  # ends past latest
+        plans = single_pet_plans(sts=[st_late])
+        conflicts = detect_conflicts(plans, owner, [])
+        wv = [c for c in conflicts if c.conflict_type == "window_violation"]
+        assert len(wv) == 1
+        assert "after its latest" in wv[0].reason
+
+    def test_task_within_window_no_violation(self):
+        owner = make_owner()
+        task = Task(TaskType.WALK, name="Walk", duration_minutes=30,
+                    earliest=time(8, 0), latest=time(12, 0))
+        st_ok = ScheduledTask(task, time(9, 0), time(9, 30), "test")
+        plans = single_pet_plans(sts=[st_ok])
+        conflicts = detect_conflicts(plans, owner, [])
+        wv = [c for c in conflicts if c.conflict_type == "window_violation"]
+        assert len(wv) == 0
+
+    def test_task_without_window_constraints_no_violation(self):
+        owner = make_owner()
+        task = Task(TaskType.FEEDING, name="Feeding", duration_minutes=15)
+        st = ScheduledTask(task, time(8, 0), time(8, 15), "test")
+        plans = single_pet_plans(sts=[st])
+        conflicts = detect_conflicts(plans, owner, [])
+        wv = [c for c in conflicts if c.conflict_type == "window_violation"]
+        assert len(wv) == 0
+
+    def test_suggested_fix_mentions_earliest_time(self):
+        owner = make_owner()
+        task = Task(TaskType.WALK, name="Walk", duration_minutes=30,
+                    earliest=time(10, 0))
+        st_early = ScheduledTask(task, time(8, 0), time(8, 30), "test")
+        plans = single_pet_plans(sts=[st_early])
+        conflicts = detect_conflicts(plans, owner, [])
+        wv = [c for c in conflicts if c.conflict_type == "window_violation"]
+        assert "10:00" in wv[0].suggested_fix
+
+
+class TestSchedulerRespectsWindowConstraints:
+    def test_scheduler_places_task_after_earliest(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        task = Task(TaskType.GROOMING, duration_minutes=30, frequency=1,
+                    earliest=time(14, 0))
+        dog.add_task(task)
+        owner.add_pet(dog)
+        plan = Scheduler(owner, dog).generate_plan()
+        grooms = [s for s in plan.scheduled if s.task.task_type == TaskType.GROOMING]
+        assert grooms
+        assert _mins(grooms[0].start_time) >= _mins(time(14, 0))
+
+    def test_scheduler_places_task_before_latest(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        task = Task(TaskType.GROOMING, duration_minutes=30, frequency=1,
+                    latest=time(10, 0))
+        dog.add_task(task)
+        owner.add_pet(dog)
+        plan = Scheduler(owner, dog).generate_plan()
+        grooms = [s for s in plan.scheduled if s.task.task_type == TaskType.GROOMING]
+        assert grooms
+        assert _mins(grooms[0].end_time) <= _mins(time(10, 0))

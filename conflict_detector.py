@@ -131,7 +131,31 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
                         ),
                     ))
 
-    # 6. Medication too soon after feeding.
+    # 6. Window violation: task scheduled outside its own earliest/latest constraints.
+    for pet_name, st in all_tasks:
+        task = st.task
+        if task.earliest and _mins(st.start_time) < _mins(task.earliest):
+            conflicts.append(Conflict(
+                conflict_type="window_violation",
+                reason=(
+                    f"{task.name} ({pet_name}) starts at {_t(st.start_time)}, "
+                    f"before its earliest allowed time {_t(task.earliest)}"
+                ),
+                suggested_fix=f"Move {task.name} to {_t(task.earliest)} or later",
+                task_keys=((pet_name, task.name),),
+            ))
+        if task.latest and _mins(st.end_time) > _mins(task.latest):
+            conflicts.append(Conflict(
+                conflict_type="window_violation",
+                reason=(
+                    f"{task.name} ({pet_name}) ends at {_t(st.end_time)}, "
+                    f"after its latest allowed time {_t(task.latest)}"
+                ),
+                suggested_fix=f"Move {task.name} earlier so it finishes by {_t(task.latest)}",
+                task_keys=((pet_name, task.name),),
+            ))
+
+    # 7. Medication too soon after feeding.
     for pet_name, plan in plans.items():
         feedings   = [st for st in plan.scheduled if st.task.task_type == TaskType.FEEDING]
         meds       = [st for st in plan.scheduled if st.task.task_type == TaskType.MEDICATION]

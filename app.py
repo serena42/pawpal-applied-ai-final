@@ -232,17 +232,19 @@ for pid in st.session_state.pet_ids:
 
     selected = st.session_state.get(f"p{pid}_tasks", [])
     if selected:
-        h1, h2, h3, h4 = st.columns([3, 2, 2, 2])
+        h1, h2, h3, h4, h5 = st.columns([3, 2, 2, 2, 3])
         with h2:
             st.caption("min")
         with h3:
             st.caption("times/day")
         with h4:
             st.caption("priority")
+        with h5:
+            st.caption("time window (optional)")
         for label in selected:
             tt = LABEL_TO_TYPE[label]
             defs = Task(tt)
-            c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 3])
             with c1:
                 st.markdown(f"**{label}**")
             with c2:
@@ -260,6 +262,25 @@ for pid in st.session_state.pet_ids:
                     "priority", 1, 5, defs.priority,
                     label_visibility="collapsed", key=f"p{pid}_{label}_p",
                 )
+            with c5:
+                win_key = f"p{pid}_{label}_win"
+                if win_key not in st.session_state:
+                    st.session_state[win_key] = False
+                use_win = st.checkbox("restrict", key=win_key, label_visibility="collapsed")
+                if use_win:
+                    wc1, wc2 = st.columns(2)
+                    with wc1:
+                        st.time_input(
+                            "earliest", time(8, 0),
+                            label_visibility="collapsed",
+                            key=f"p{pid}_{label}_earliest",
+                        )
+                    with wc2:
+                        st.time_input(
+                            "latest", time(18, 0),
+                            label_visibility="collapsed",
+                            key=f"p{pid}_{label}_latest",
+                        )
 
         if TaskType.MEDICATION in [LABEL_TO_TYPE[l] for l in selected] and \
            TaskType.FEEDING in [LABEL_TO_TYPE[l] for l in selected]:
@@ -331,7 +352,12 @@ if st.button("Generate daily plan", type="primary"):
                     freq = max(1, round(freq * e_freq * a_freq))
                 elif tt == TaskType.FEEDING:
                     freq = max(1, round(freq * AGE_FEEDING_FREQUENCY_MULT.get(age_group, 1.0)))
-                task = Task(tt, duration_minutes=dur, frequency=freq, priority=pri)
+                earliest = latest = None
+                if st.session_state.get(f"p{pid}_{label}_win"):
+                    earliest = st.session_state.get(f"p{pid}_{label}_earliest")
+                    latest   = st.session_state.get(f"p{pid}_{label}_latest")
+                task = Task(tt, duration_minutes=dur, frequency=freq, priority=pri,
+                            earliest=earliest, latest=latest)
                 if tt == TaskType.FEEDING:
                     feeding_task = task
                 pet.add_task(task)
@@ -360,6 +386,7 @@ if st.button("Generate daily plan", type="primary"):
 CONFLICT_ICONS = {
     "overlap": "🔴", "dependency": "🟠", "gap": "🟡",
     "timeout": "🟣", "outside_window": "⚪",
+    "post_feeding_gap": "🟧", "med_feeding_gap": "🟦", "window_violation": "🔷",
 }
 
 if "_plans" in st.session_state:

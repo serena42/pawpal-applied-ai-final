@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from models import _mins, _to_time, _GAP_THRESHOLDS, _MIN_ACTIVITY_GAP, ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP, TaskType
+from models import _mins, _to_time, _GAP_THRESHOLDS, _MIN_ACTIVITY_GAP, ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP, TaskType, _MIN_MED_FEEDING_GAP
 
 
 @dataclass
@@ -131,7 +131,29 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
                         ),
                     ))
 
-    # 6. Post-feeding gap: vigorous activity starting within POST_FEEDING_GAP of feeding end.
+    # 6. Medication too soon after feeding.
+    for pet_name, plan in plans.items():
+        feedings   = [st for st in plan.scheduled if st.task.task_type == TaskType.FEEDING]
+        meds       = [st for st in plan.scheduled if st.task.task_type == TaskType.MEDICATION]
+        for feed_st in feedings:
+            feed_end = _mins(feed_st.end_time)
+            for med_st in meds:
+                med_start = _mins(med_st.start_time)
+                if feed_end <= med_start < feed_end + _MIN_MED_FEEDING_GAP:
+                    gap_min = med_start - feed_end
+                    ok_time = _to_time(feed_end + _MIN_MED_FEEDING_GAP).strftime("%H:%M")
+                    conflicts.append(Conflict(
+                        conflict_type="med_feeding_gap",
+                        reason=(
+                            f"{med_st.task.name} ({pet_name}) starts at {_t(med_st.start_time)}, "
+                            f"only {gap_min} min after {feed_st.task.name} ends at {_t(feed_st.end_time)} "
+                            f"— allow at least {_MIN_MED_FEEDING_GAP} min for food to settle"
+                        ),
+                        suggested_fix=f"Move {med_st.task.name} to {ok_time} or later",
+                        task_keys=((pet_name, feed_st.task.name), (pet_name, med_st.task.name)),
+                    ))
+
+    # 7. Post-feeding gap: vigorous activity starting within POST_FEEDING_GAP of feeding end.
     for pet_name, plan in plans.items():
         feedings = [st for st in plan.scheduled if st.task.task_type == TaskType.FEEDING]
         vigorous = [st for st in plan.scheduled if st.task.task_type in VIGOROUS_TASKS]

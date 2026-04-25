@@ -12,7 +12,7 @@ from datetime import time
 from models import (
     Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, Scheduler, _to_time, _mins,
     ENERGY_DURATION_MULT, ENERGY_FREQUENCY_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
-    VIGOROUS_TASKS, POST_FEEDING_GAP,
+    VIGOROUS_TASKS, POST_FEEDING_GAP, _MIN_MED_FEEDING_GAP,
 )
 from conflict_detector import detect_conflicts, Conflict
 from agent import ScheduleAgent
@@ -619,3 +619,69 @@ class TestEnergyFrequencyApplication:
     def test_frequency_never_below_one(self):
         _, freq = _apply(30, 1, TaskType.WALK, "low", "senior")
         assert freq >= 1
+
+
+# ---------------------------------------------------------------------------
+# Fix #3: Minimum delay between feeding end and medication start
+# ---------------------------------------------------------------------------
+
+class TestMedFeedingGapDetection:
+    def test_medication_immediately_after_feeding_detected(self):
+        owner = make_owner()
+        feed = make_st(TaskType.FEEDING, "Feeding", 480, 15)        # 8:00–8:15
+        med  = make_st(TaskType.MEDICATION, "Medication", 495, 5)   # 8:15–8:20 — 0 min gap
+        plans = single_pet_plans(sts=[feed, med])
+        conflicts = detect_conflicts(plans, owner, [])
+        mfg = [c for c in conflicts if c.conflict_type == "med_feeding_gap"]
+        assert len(mfg) == 1
+        assert "Medication" in mfg[0].reason
+
+    def test_medication_after_gap_no_conflict(self):
+        owner = make_owner()
+        feed = make_st(TaskType.FEEDING, "Feeding", 480, 15)        # 8:00–8:15
+        # medication starts after feeding end + _MIN_MED_FEEDING_GAP
+        med  = make_st(TaskType.MEDICATION, "Medication", 495 + _MIN_MED_FEEDING_GAP, 5)
+        plans = single_pet_plans(sts=[feed, med])
+        conflicts = detect_conflicts(plans, owner, [])
+        mfg = [c for c in conflicts if c.conflict_type == "med_feeding_gap"]
+        assert len(mfg) == 0
+
+    def test_suggested_fix_mentions_correct_time(self):
+        owner = make_owner()
+        feed = make_st(TaskType.FEEDING, "Feeding", 480, 15)        # ends 8:15
+        med  = make_st(TaskType.MEDICATION, "Medication", 495, 5)   # starts 8:15
+        plans = single_pet_plans(sts=[feed, med])
+        conflicts = detect_conflicts(plans, owner, [])
+        mfg = [c for c in conflicts if c.conflict_type == "med_feeding_gap"]
+        assert len(mfg) == 1
+        # safe start = 8:15 + 10 min = 8:25
+        assert "08:25" in mfg[0].suggested_fix
+
+    def test_feeding_before_medication_no_false_positive(self):
+        """Medication well after feeding should produce no conflict."""
+        owner = make_owner()
+        feed = make_st(TaskType.FEEDING, "Feeding", 480, 15)        # 8:00–8:15
+        med  = make_st(TaskType.MEDICATION, "Medication", 540, 5)   # 9:00 — 45 min later
+        plans = single_pet_plans(sts=[feed, med])
+        conflicts = detect_conflicts(plans, owner, [])
+        mfg = [c for c in conflicts if c.conflict_type == "med_feeding_gap"]
+        assert len(mfg) == 0
+
+
+class TestSchedulerEnforcedMedFeedingGap:
+    def test_scheduler_places_medication_after_min_gap(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        feeding = Task(TaskType.FEEDING, frequency=1)
+        medication = Task(TaskType.MEDICATION, frequency=1, dependencies=[feeding])
+        dog.add_task(feeding)
+        dog.add_task(medication)
+        owner.add_pet(dog)
+        plan = Scheduler(owner, dog).generate_plan()
+        feed_sts = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
+        med_sts  = [s for s in plan.scheduled if s.task.task_type == TaskType.MEDICATION]
+        assert feed_sts and med_sts
+        feed_end  = _mins(feed_sts[0].end_time)
+        med_start = _mins(med_sts[0].start_time)
+        assert med_start >= feed_end + _MIN_MED_FEEDING_GAP

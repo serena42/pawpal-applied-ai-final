@@ -130,6 +130,9 @@ VIGOROUS_TASKS: frozenset = frozenset({
 # Minutes of rest required after feeding before a vigorous activity may start.
 POST_FEEDING_GAP: int = 30
 
+# Minimum minutes after feeding ends before medication may start.
+_MIN_MED_FEEDING_GAP: int = 10
+
 # Minimum gap (minutes) required between consecutive occurrences of any activity task.
 # Puppies need frequent short sessions; seniors need longer rests between.
 _MIN_ACTIVITY_GAP: dict[str, int] = {
@@ -315,6 +318,17 @@ class Scheduler:
                 target = day_start + i * interval
                 if task.earliest:
                     target = max(target, _mins(task.earliest))
+
+                # Medication must start at least _MIN_MED_FEEDING_GAP after feeding ends.
+                if task.task_type == TaskType.MEDICATION:
+                    for dep in task.dependencies:
+                        if dep.task_type == TaskType.FEEDING:
+                            dep_ends = [
+                                _mins(s.end_time) for s in plan.scheduled
+                                if s.task is dep
+                            ]
+                            if dep_ends:
+                                target = max(target, max(dep_ends) + _MIN_MED_FEEDING_GAP)
 
                 # First try: respect advance_past (min-gap or window boundary).
                 slot_start = None

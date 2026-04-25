@@ -11,7 +11,7 @@ from datetime import time
 
 from models import (
     Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, Scheduler, _to_time, _mins,
-    ENERGY_DURATION_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
+    ENERGY_DURATION_MULT, ENERGY_FREQUENCY_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
     VIGOROUS_TASKS, POST_FEEDING_GAP,
 )
 from conflict_detector import detect_conflicts, Conflict
@@ -371,10 +371,11 @@ def _apply(dur: int, freq: int, tt: TaskType, energy: str, age: str):
     """Mirror of the multiplier logic in app.py generate section."""
     if tt in ACTIVITY_TASKS:
         e_dur  = ENERGY_DURATION_MULT.get(energy, 1.0)
+        e_freq = ENERGY_FREQUENCY_MULT.get(energy, 1.0)
         a_dur  = AGE_DURATION_MULT.get(age, 1.0)
         a_freq = AGE_FREQUENCY_MULT.get(age, 1.0)
         dur    = max(1, round(dur  * e_dur * a_dur))
-        freq   = max(1, round(freq * a_freq))
+        freq   = max(1, round(freq * e_freq * a_freq))
     return dur, freq
 
 
@@ -411,7 +412,7 @@ class TestMultiplierApplication:
     def test_high_energy_puppy_combined(self):
         dur, freq = _apply(30, 2, TaskType.WALK, "high", "puppy")
         assert dur  == round(30 * 1.2 * 0.75)
-        assert freq == round(2  * 1.5)
+        assert freq == round(2 * ENERGY_FREQUENCY_MULT["high"] * AGE_FREQUENCY_MULT["puppy"])
 
     def test_feeding_unaffected_by_energy(self):
         dur, freq = _apply(15, 2, TaskType.FEEDING, "very_high", "puppy")
@@ -564,3 +565,57 @@ class TestSchedulerEnforcesPostFeedingGap:
 
     def test_post_feeding_gap_is_positive(self):
         assert POST_FEEDING_GAP > 0
+
+
+# ---------------------------------------------------------------------------
+# Fix #2: Energy level scales activity frequency
+# ---------------------------------------------------------------------------
+
+class TestEnergyFrequencyMultConstants:
+    def test_very_high_energy_freq_above_medium(self):
+        assert ENERGY_FREQUENCY_MULT["very_high"] > ENERGY_FREQUENCY_MULT["medium"]
+
+    def test_low_energy_freq_below_medium(self):
+        assert ENERGY_FREQUENCY_MULT["low"] < ENERGY_FREQUENCY_MULT["medium"]
+
+    def test_medium_energy_is_baseline(self):
+        assert ENERGY_FREQUENCY_MULT["medium"] == 1.0
+
+    def test_ordering_low_medium_high_very_high(self):
+        m = ENERGY_FREQUENCY_MULT
+        assert m["low"] < m["medium"] < m["high"] < m["very_high"]
+
+    def test_all_keys_present(self):
+        assert set(ENERGY_FREQUENCY_MULT) == {"low", "medium", "high", "very_high"}
+
+
+class TestEnergyFrequencyApplication:
+    def test_very_high_energy_increases_walk_frequency(self):
+        _, freq = _apply(30, 3, TaskType.WALK, "very_high", "adult")
+        assert freq == round(3 * ENERGY_FREQUENCY_MULT["very_high"])
+
+    def test_low_energy_decreases_walk_frequency(self):
+        _, freq = _apply(30, 3, TaskType.WALK, "low", "adult")
+        assert freq == round(3 * ENERGY_FREQUENCY_MULT["low"])
+
+    def test_medium_energy_leaves_frequency_unchanged(self):
+        _, freq = _apply(30, 3, TaskType.WALK, "medium", "adult")
+        assert freq == 3
+
+    def test_energy_and_age_frequency_combined(self):
+        _, freq = _apply(30, 2, TaskType.WALK, "very_high", "puppy")
+        expected = max(1, round(2 * ENERGY_FREQUENCY_MULT["very_high"] * AGE_FREQUENCY_MULT["puppy"]))
+        assert freq == expected
+
+    def test_very_high_energy_senior_does_not_exceed_adult_very_high(self):
+        _, freq_vh_senior = _apply(30, 2, TaskType.WALK, "very_high", "senior")
+        _, freq_vh_adult  = _apply(30, 2, TaskType.WALK, "very_high", "adult")
+        assert freq_vh_senior < freq_vh_adult
+
+    def test_feeding_frequency_unaffected_by_energy(self):
+        dur, freq = _apply(15, 2, TaskType.FEEDING, "very_high", "adult")
+        assert freq == 2  # non-activity task — unchanged
+
+    def test_frequency_never_below_one(self):
+        _, freq = _apply(30, 1, TaskType.WALK, "low", "senior")
+        assert freq >= 1

@@ -109,6 +109,13 @@ AGE_FREQUENCY_MULT: dict[str, float] = {
     "senior": 0.8,
 }
 
+ENERGY_FREQUENCY_MULT: dict[str, float] = {
+    "low":       0.8,
+    "medium":    1.0,
+    "high":      1.2,
+    "very_high": 1.5,
+}
+
 # Only exercise/enrichment tasks scale with energy and age; care tasks do not.
 ACTIVITY_TASKS: frozenset = frozenset({
     TaskType.WALK, TaskType.FETCH, TaskType.PLAYTIME,

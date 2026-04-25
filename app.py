@@ -3,7 +3,7 @@ from datetime import time
 from models import (
     Task, TaskType, Owner, Pet, Scheduler,
     PET_TASK_DEFAULTS, TASK_EMOJI, PET_EMOJI,
-    ENERGY_DURATION_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
+    ENERGY_DURATION_MULT, ENERGY_FREQUENCY_MULT, AGE_DURATION_MULT, AGE_FREQUENCY_MULT, ACTIVITY_TASKS,
 )
 from persistence import save, load, save_exists, owner_to_dict
 from conflict_detector import detect_conflicts, detect_suggested_slots, recommend_service
@@ -312,6 +312,7 @@ if st.button("Generate daily plan", type="primary"):
                 continue
 
             e_dur  = ENERGY_DURATION_MULT.get(energy_level, 1.0)
+            e_freq = ENERGY_FREQUENCY_MULT.get(energy_level, 1.0)
             a_dur  = AGE_DURATION_MULT.get(age_group, 1.0)
             a_freq = AGE_FREQUENCY_MULT.get(age_group, 1.0)
 
@@ -325,7 +326,7 @@ if st.button("Generate daily plan", type="primary"):
                 pri  = int(st.session_state[f"p{pid}_{label}_p"])
                 if tt in ACTIVITY_TASKS:
                     dur  = max(1, round(dur  * e_dur * a_dur))
-                    freq = max(1, round(freq * a_freq))
+                    freq = max(1, round(freq * e_freq * a_freq))
                 task = Task(tt, duration_minutes=dur, frequency=freq, priority=pri)
                 if tt == TaskType.FEEDING:
                     feeding_task = task

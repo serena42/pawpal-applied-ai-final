@@ -43,7 +43,11 @@ class ScheduleAgent:
             f"Available time windows: {windows_str}\n\n"
             f"Current schedule:\n{self._format_schedule(plans)}\n\n"
             f"Conflicts to fix:\n{self._format_conflicts(conflicts)}\n\n"
-            "To fix a gap conflict, move the LATER occurrence to an earlier available window.\n\n"
+            "Rules:\n"
+            "- For OVERLAP conflicts: move the later-starting task to after the earlier task ends.\n"
+            "- For DEPENDENCY conflicts: move the DEPENDENT task to after its dependency ends "
+            "(never move the dependency itself).\n"
+            "- For GAP conflicts: move the later occurrence to an earlier available window.\n\n"
             "Reply with ONLY one line. Use EXACTLY this format:\n"
             "  Move [task name] from HH:MM to HH:MM\n"
             "Use the task name exactly as shown in the schedule (no pet name in parentheses).\n"
@@ -123,5 +127,6 @@ class ScheduleAgent:
 
     def _format_conflicts(self, conflicts: list) -> str:
         return "\n".join(
-            f"  [{c.conflict_type.upper()}] {c.reason}" for c in conflicts
+            f"  [{c.conflict_type.upper()}] {c.reason} | Hint: {c.suggested_fix}"
+            for c in conflicts
         )

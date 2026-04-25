@@ -1,16 +1,10 @@
 """
-PawPal+ Agentic Demo
-====================
-Demonstrates the conflict-detection → AI repair loop.
-
-Scenario
---------
-Jordan has a wide daily window (8 AM–6 PM). The initial schedule contains
-two deliberate time-overlap conflicts so the agent has clear, solvable
-problems to work through across 2–3 visible iterations.
+PawPal+ Agentic Demo — 3 Scenarios
+====================================
+Demonstrates the conflict-detection → AI repair loop across three scenarios
+of increasing complexity.
 
 Run:
-    export GEMINI_API_KEY=<your-key>
     python demo_agent.py
 """
 
@@ -22,46 +16,12 @@ from agent import ScheduleAgent
 
 
 # ---------------------------------------------------------------------------
-# Demo scenario
+# Shared helpers
 # ---------------------------------------------------------------------------
 
-def load_demo_owner() -> Owner:
-    owner = Owner(name="Jordan")
-    owner.add_window(time(8, 0), time(18, 0))   # wide 10-hour window
-    mochi = Pet(name="Mochi", pet_type="dog")
-    luna  = Pet(name="Luna",  pet_type="cat")
-    owner.add_pet(mochi)
-    owner.add_pet(luna)
-    return owner
+DIVIDER  = "=" * 62
+SUBDIV   = "-" * 62
 
-
-def build_conflicted_plans(owner) -> dict:
-    """
-    Build a manually crafted schedule with two deliberate overlaps:
-      [Mochi] Morning Walk 08:00–08:30 overlaps Feeding 08:20–08:35
-      [Luna]  Feeding 10:00–10:15 overlaps Litter box 10:10–10:20
-    The agent's job is to move the later task in each pair to clear the overlap.
-    """
-    mochi_plan = DailyPlan()
-    walk    = Task(TaskType.WALK,    name="Morning Walk", duration_minutes=30, frequency=1)
-    feeding = Task(TaskType.FEEDING, name="Feeding",      duration_minutes=15, frequency=1)
-    # Deliberate overlap: Feeding starts at 08:20 while Walk runs until 08:30.
-    mochi_plan.scheduled.append(ScheduledTask(walk,    _to_time(480), _to_time(510), "scheduled"))
-    mochi_plan.scheduled.append(ScheduledTask(feeding, _to_time(500), _to_time(515), "scheduled"))
-
-    luna_plan = DailyPlan()
-    feeding2 = Task(TaskType.FEEDING,   name="Feeding",   duration_minutes=15, frequency=1)
-    litter   = Task(TaskType.LITTER_BOX, name="Litter box", duration_minutes=10, frequency=1)
-    # Deliberate overlap: Litter box starts at 10:10 while Feeding runs until 10:15.
-    luna_plan.scheduled.append(ScheduledTask(feeding2, _to_time(600), _to_time(615), "scheduled"))
-    luna_plan.scheduled.append(ScheduledTask(litter,   _to_time(610), _to_time(620), "scheduled"))
-
-    return {"Mochi": mochi_plan, "Luna": luna_plan}
-
-
-# ---------------------------------------------------------------------------
-# Formatting helpers
-# ---------------------------------------------------------------------------
 
 def format_schedule(plans: dict) -> str:
     rows = sorted(
@@ -77,79 +37,170 @@ def format_schedule(plans: dict) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Main demo
-# ---------------------------------------------------------------------------
-
-def main():
-    DIVIDER = "=" * 62
-
-    owner = load_demo_owner()
-    plans = build_conflicted_plans(owner)
-
+def run_scenario(title: str, description: str, plans: dict, owner: Owner) -> None:
     print(DIVIDER)
-    print("PAWPAL+ AGENTIC CONFLICT REPAIR DEMO")
+    print(f"  {title}")
+    print(SUBDIV)
+    print(f"  {description}")
     print(DIVIDER)
-    print(f"Owner: {owner.name}")
-    print("Availability: " + ", ".join(
-        f"{w.start.strftime('%H:%M')}–{w.end.strftime('%H:%M')}"
-        for w in owner.availability_windows
-    ))
-    print()
 
-    print(DIVIDER)
-    print("INITIAL SCHEDULE  (contains deliberate conflicts)")
-    print(DIVIDER)
+    print("\nInitial schedule:")
     print(format_schedule(plans))
-    print()
 
-    # Rule-based detection (no API call).
     conflicts = detect_conflicts(plans, owner, owner.pets)
 
     if not conflicts:
-        print("No conflicts detected — nothing for the agent to fix.")
+        print("\nNo conflicts detected — schedule is already valid.\n")
         return
 
-    print(DIVIDER)
-    print(f"CONFLICTS DETECTED  ({len(conflicts)} found)")
-    print(DIVIDER)
+    print(f"\nConflicts detected ({len(conflicts)}):")
     for c in conflicts:
         print(f"  [{c.conflict_type.upper()}] {c.reason}")
-        print(f"    Suggested fix: {c.suggested_fix}")
-    print()
 
-    # Agentic repair loop (Gemini API).
-    print(DIVIDER)
-    print("AGENT REPAIR LOOP  (AI proposes fixes, detector validates)")
-    print(DIVIDER)
-
-    agent = ScheduleAgent()
+    print("\nAgent repair loop:")
+    agent  = ScheduleAgent()
     plans, history = agent.fix_schedule(plans, owner, owner.pets)
 
-    if not history:
-        print("  Agent exited immediately — no conflicts to fix.")
-    else:
-        for step in history:
-            print(f"  Iteration {step['iteration'] + 1}:")
-            print(f"    Conflicts found : {step['conflicts_found']}")
-            print(f"    AI suggests     : {step['claude_suggestion']}")
-        print()
+    for step in history:
+        print(f"  Iteration {step['iteration'] + 1}: "
+              f"{step['conflicts_found']} conflict(s) found")
+        print(f"    AI suggests: {step['claude_suggestion']}")
 
-    # Final validation.
     remaining = detect_conflicts(plans, owner, owner.pets)
-
-    print(DIVIDER)
-    print("FINAL SCHEDULE  (after agent repairs)")
-    print(DIVIDER)
+    print(f"\nFinal schedule:")
     print(format_schedule(plans))
-    print()
 
     if remaining:
-        print(f"  [{len(remaining)} conflict(s) remain after {len(history)} iteration(s)]")
+        print(f"\n  WARNING: {len(remaining)} conflict(s) unresolved after "
+              f"{len(history)} iteration(s).")
         for c in remaining:
-            print(f"  [{c.conflict_type.upper()}] {c.reason}")
+            print(f"     [{c.conflict_type.upper()}] {c.reason}")
     else:
-        print(f"  All conflicts resolved in {len(history)} iteration(s).")
+        print(f"\n  All conflicts resolved in {len(history)} iteration(s).")
+
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Scenario 1 — Simple single-pet overlap
+# ---------------------------------------------------------------------------
+
+def scenario_1() -> tuple:
+    """
+    Alex has one dog, Buddy. Walk runs 08:00–08:30 but Feeding
+    was accidentally scheduled at 08:20, overlapping the walk by 10 minutes.
+    One conflict, resolved in one iteration.
+    """
+    owner = Owner(name="Alex")
+    owner.add_window(time(8, 0), time(18, 0))
+    buddy = Pet(name="Buddy", pet_type="dog")
+    owner.add_pet(buddy)
+
+    walk    = Task(TaskType.WALK,    name="Morning Walk", duration_minutes=30, frequency=1)
+    feeding = Task(TaskType.FEEDING, name="Feeding",      duration_minutes=15, frequency=1)
+
+    plan = DailyPlan()
+    plan.scheduled.append(ScheduledTask(walk,    _to_time(480), _to_time(510), "scheduled"))
+    # Overlap: Feeding starts at 08:20, walk ends at 08:30.
+    plan.scheduled.append(ScheduledTask(feeding, _to_time(500), _to_time(515), "scheduled"))
+
+    return {"Buddy": plan}, owner
+
+
+# ---------------------------------------------------------------------------
+# Scenario 2 — Multi-pet, multi-conflict cascade
+# ---------------------------------------------------------------------------
+
+def scenario_2() -> tuple:
+    """
+    Jordan has Mochi (dog) and Luna (cat). Two separate overlaps exist —
+    one for each pet — and the agent resolves them one per iteration.
+    """
+    owner = Owner(name="Jordan")
+    owner.add_window(time(8, 0), time(18, 0))
+    mochi = Pet(name="Mochi", pet_type="dog")
+    luna  = Pet(name="Luna",  pet_type="cat")
+    owner.add_pet(mochi)
+    owner.add_pet(luna)
+
+    walk    = Task(TaskType.WALK,     name="Morning Walk", duration_minutes=30, frequency=1)
+    feeding = Task(TaskType.FEEDING,  name="Feeding",      duration_minutes=15, frequency=1)
+    feeding2 = Task(TaskType.FEEDING,  name="Feeding",     duration_minutes=15, frequency=1)
+    litter  = Task(TaskType.LITTER_BOX, name="Litter box", duration_minutes=10, frequency=1)
+
+    mochi_plan = DailyPlan()
+    mochi_plan.scheduled.append(ScheduledTask(walk,    _to_time(480), _to_time(510), "scheduled"))
+    # Overlap: Feeding starts 10 min before walk ends.
+    mochi_plan.scheduled.append(ScheduledTask(feeding, _to_time(500), _to_time(515), "scheduled"))
+
+    luna_plan = DailyPlan()
+    luna_plan.scheduled.append(ScheduledTask(feeding2, _to_time(600), _to_time(615), "scheduled"))
+    # Overlap: Litter box starts 5 min before feeding ends.
+    luna_plan.scheduled.append(ScheduledTask(litter,  _to_time(610), _to_time(620), "scheduled"))
+
+    return {"Mochi": mochi_plan, "Luna": luna_plan}, owner
+
+
+# ---------------------------------------------------------------------------
+# Scenario 3 — Dependency violation (medication must follow feeding)
+# ---------------------------------------------------------------------------
+
+def scenario_3() -> tuple:
+    """
+    Sam's dog Max needs medication after eating — Medication depends on Feeding.
+    The schedule has Medication at 08:00 but Feeding isn't until 09:00,
+    violating the dependency. The correct fix is to move Medication to after
+    Feeding ends (09:15), not to move Feeding earlier.
+    """
+    owner = Owner(name="Sam")
+    owner.add_window(time(8, 0), time(18, 0))
+    max_pet = Pet(name="Max", pet_type="dog")
+    owner.add_pet(max_pet)
+
+    feeding    = Task(TaskType.FEEDING,    name="Feeding",    duration_minutes=15, frequency=1)
+    # Medication declares Feeding as a dependency (must come after feeding).
+    medication = Task(TaskType.MEDICATION, name="Medication", duration_minutes=5,
+                      frequency=1, dependencies=[feeding])
+
+    plan = DailyPlan()
+    # Violation: Medication at 08:00, Feeding not until 09:00.
+    # Medication must be AFTER Feeding ends (09:15).
+    plan.scheduled.append(ScheduledTask(medication, _to_time(480), _to_time(485), "scheduled"))
+    plan.scheduled.append(ScheduledTask(feeding,    _to_time(540), _to_time(555), "scheduled"))
+
+    return {"Max": plan}, owner
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    print(DIVIDER)
+    print("  PAWPAL+ — AGENTIC CONFLICT DETECTION & REPAIR DEMO")
+    print(DIVIDER)
+    print()
+
+    plans, owner = scenario_1()
+    run_scenario(
+        "SCENARIO 1 — Simple single-pet overlap",
+        "Alex's dog Buddy has a walk/feeding time clash. One conflict, one fix.",
+        plans, owner,
+    )
+
+    plans, owner = scenario_2()
+    run_scenario(
+        "SCENARIO 2 — Multi-pet cascade",
+        "Jordan's dog and cat each have an overlap. Agent resolves them in sequence.",
+        plans, owner,
+    )
+
+    plans, owner = scenario_3()
+    run_scenario(
+        "SCENARIO 3 — Dependency violation (edge case)",
+        "Sam's dog Max needs medication AFTER eating. Schedule has them backwards.",
+        plans, owner,
+    )
 
 
 if __name__ == "__main__":

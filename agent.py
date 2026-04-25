@@ -1,8 +1,35 @@
+import json
 import os
-import re
 from google import genai
+from google.genai import types
 from models import _mins, _to_time
 from conflict_detector import detect_conflicts, suggest_coverage_windows
+
+
+def _parse_hhmm(s: str):
+    """Parse 'HH:MM' to minutes since midnight, or None on failure."""
+    if not s:
+        return None
+    parts = s.split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]) * 60 + int(parts[1])
+    except ValueError:
+        return None
+
+
+def _format_fix(fix: dict) -> str:
+    """Human-readable summary of a fix dict for display in the UI."""
+    action = fix.get("action", "none")
+    if action == "move":
+        task  = fix.get("task", "?")
+        from_t = fix.get("from_time")
+        to_t  = fix.get("to_time", "?")
+        return f"Move {task} from {from_t} to {to_t}" if from_t else f"Move {task} to {to_t}"
+    if action == "swap":
+        return f"Swap {fix.get('task_a', '?')} and {fix.get('task_b', '?')}"
+    return "No change"
 
 
 class ScheduleAgent:
@@ -26,18 +53,18 @@ class ScheduleAgent:
             conflicts = detect_conflicts(plans, owner, pets)
             if not conflicts:
                 break
-            suggestion = self._ask_ai(plans, conflicts, owner)
+            fix = self._ask_ai(plans, conflicts, owner)
             history.append({
                 "iteration": iteration,
                 "conflicts_found": len(conflicts),
-                "claude_suggestion": suggestion,
+                "claude_suggestion": _format_fix(fix),
             })
-            plans = self._apply_fix(plans, suggestion)
+            plans = self._apply_fix(plans, fix)
 
         coverage = suggest_coverage_windows(plans, owner, pets)
         return plans, history, coverage
 
-    def _ask_ai(self, plans: dict, conflicts: list, owner) -> str:
+    def _ask_ai(self, plans: dict, conflicts: list, owner) -> dict:
         windows_str = ", ".join(
             f"{w.start.strftime('%H:%M')}-{w.end.strftime('%H:%M')}"
             for w in owner.availability_windows
@@ -57,45 +84,38 @@ class ScheduleAgent:
             "- For MED_FEEDING_GAP conflicts: move the medication to at least 10 minutes after "
             "the feeding ends.\n"
             "- For WINDOW_VIOLATION conflicts: move the task to within its allowed time window.\n\n"
-            "Reply with ONLY one line. Use EXACTLY this format:\n"
-            "  Move [task name] from HH:MM to HH:MM\n"
-            "Use the task name exactly as shown in the schedule (no pet name in parentheses).\n"
-            "No explanation. Just the change."
+            "Respond with a JSON object — no other text.\n"
+            'For a move: {"action":"move","task":"<name>","from_time":"HH:MM","to_time":"HH:MM"}\n'
+            'For a swap: {"action":"swap","task_a":"<name>","task_b":"<name>"}\n'
+            'If no fix is possible: {"action":"none"}\n'
+            "Use task names exactly as shown in the schedule (no pet name in parentheses).\n"
+            "from_time is required for move — it disambiguates tasks with the same name."
         )
-        response = self.client.models.generate_content(model=self.MODEL, contents=prompt)
-        return response.text.strip()
-
-    def _apply_fix(self, plans: dict, suggestion: str) -> dict:
-        """Parse the AI suggestion and apply it to the plan."""
-        # Strip any trailing parenthetical pet name the model may add, e.g. "(Luna)".
-        suggestion = re.sub(r'\s*\([^)]*\)', '', suggestion)
-
-        # "Move Feeding from 20:00 to 09:00" — preferred form (from-time disambiguates)
-        move_from = re.search(
-            r"move\s+(.+?)\s+from\s+(\d{1,2}):(\d{2})\s+to\s+(\d{1,2}):(\d{2})",
-            suggestion, re.IGNORECASE,
+        response = self.client.models.generate_content(
+            model=self.MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
-        if move_from:
-            task_name = move_from.group(1).strip()
-            from_mins = int(move_from.group(2)) * 60 + int(move_from.group(3))
-            to_mins   = int(move_from.group(4)) * 60 + int(move_from.group(5))
+        try:
+            return json.loads(response.text)
+        except (json.JSONDecodeError, AttributeError):
+            return {"action": "none"}
+
+    def _apply_fix(self, plans: dict, fix: dict) -> dict:
+        """Apply a fix dict returned by _ask_ai to the plan."""
+        action = fix.get("action", "none")
+        if action == "move":
+            task_name = fix.get("task", "")
+            to_mins   = _parse_hhmm(fix.get("to_time", ""))
+            from_mins = _parse_hhmm(fix.get("from_time", ""))
+            if not task_name or to_mins is None:
+                return plans
             return self._move_task(plans, task_name, to_mins, from_mins=from_mins)
-
-        # "Move Feeding to 09:00" — fallback without from-time
-        move = re.search(
-            r"move\s+(.+?)\s+to\s+(\d{1,2}):(\d{2})",
-            suggestion, re.IGNORECASE,
-        )
-        if move:
-            task_name = move.group(1).strip()
-            to_mins   = int(move.group(2)) * 60 + int(move.group(3))
-            return self._move_task(plans, task_name, to_mins)
-
-        # "Swap Feeding and Litter box"
-        swap = re.search(r"swap\s+(.+?)\s+and\s+(.+)", suggestion, re.IGNORECASE)
-        if swap:
-            return self._swap_tasks(plans, swap.group(1).strip(), swap.group(2).strip())
-
+        if action == "swap":
+            task_a = fix.get("task_a", "")
+            task_b = fix.get("task_b", "")
+            if task_a and task_b:
+                return self._swap_tasks(plans, task_a, task_b)
         return plans
 
     def _move_task(self, plans: dict, task_name: str, new_start_mins: int,

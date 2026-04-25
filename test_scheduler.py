@@ -1,7 +1,12 @@
 import pytest
 from datetime import time
 from models import (
-    Task, TaskType, AvailabilityWindow, Owner, Pet, Scheduler, DailyPlan
+    Task, TaskType, AvailabilityWindow, Owner, Pet, Scheduler, DailyPlan,
+    _mins,
+    ENERGY_DURATION_MULT, ENERGY_FREQUENCY_MULT,
+    AGE_DURATION_MULT, AGE_FREQUENCY_MULT, AGE_FEEDING_FREQUENCY_MULT,
+    ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP,
+    _MIN_MED_FEEDING_GAP, _MIN_CARE_TASK_GAP,
 )
 
 
@@ -207,3 +212,192 @@ def test_dependency_respected(basic_owner, dog):
     assert TaskType.FEEDING in scheduled_types
     assert TaskType.MEDICATION in scheduled_types
     assert scheduled_types.index(TaskType.FEEDING) < scheduled_types.index(TaskType.MEDICATION)
+
+
+# ---------------------------------------------------------------------------
+# Breed-tuner helpers (mirror of multiplier logic in app.py)
+# ---------------------------------------------------------------------------
+
+def _apply(dur: int, freq: int, tt: TaskType, energy: str, age: str):
+    if tt in ACTIVITY_TASKS:
+        dur  = max(1, round(dur  * ENERGY_DURATION_MULT.get(energy, 1.0)  * AGE_DURATION_MULT.get(age, 1.0)))
+        freq = max(1, round(freq * ENERGY_FREQUENCY_MULT.get(energy, 1.0) * AGE_FREQUENCY_MULT.get(age, 1.0)))
+    elif tt == TaskType.FEEDING:
+        freq = max(1, round(freq * AGE_FEEDING_FREQUENCY_MULT.get(age, 1.0)))
+    return dur, freq
+
+
+# ---------------------------------------------------------------------------
+# Scheduler integration: breed-tuned durations and frequencies
+# ---------------------------------------------------------------------------
+
+class TestSchedulerWithBreedTuner:
+    def _make_plan(self, energy: str, age: str, base_dur: int = 30, base_freq: int = 1):
+        owner = Owner("Tester")
+        owner.add_window(time(8, 0), time(20, 0))
+        pet = Pet("Buddy", "dog", energy_level=energy, age_group=age)
+        dur, freq = _apply(base_dur, base_freq, TaskType.WALK, energy, age)
+        pet.add_task(Task(TaskType.WALK, duration_minutes=dur, frequency=freq))
+        owner.add_pet(pet)
+        return Scheduler(owner, pet).generate_plan()
+
+    def test_very_high_energy_walk_longer_than_low(self):
+        plan_hi  = self._make_plan("very_high", "adult")
+        plan_low = self._make_plan("low", "adult")
+        assert plan_hi.scheduled[0].task.duration_minutes > plan_low.scheduled[0].task.duration_minutes
+
+    def test_puppy_walk_scheduled_more_frequently(self):
+        plan_puppy = self._make_plan("medium", "puppy", base_freq=2)
+        plan_adult = self._make_plan("medium", "adult", base_freq=2)
+        assert len(plan_puppy.scheduled) >= len(plan_adult.scheduled)
+
+    def test_medium_adult_walk_uses_base_duration(self):
+        plan = self._make_plan("medium", "adult", base_dur=30)
+        assert plan.scheduled[0].task.duration_minutes == 30
+
+
+# ---------------------------------------------------------------------------
+# Scheduler enforces post-feeding gap before vigorous activity
+# ---------------------------------------------------------------------------
+
+class TestSchedulerEnforcesPostFeedingGap:
+    def _make_plan_with(self, task_types):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        for tt in task_types:
+            dog.add_task(Task(tt, frequency=1))
+        owner.add_pet(dog)
+        return Scheduler(owner, dog).generate_plan()
+
+    def test_fetch_not_scheduled_within_gap_of_feeding(self):
+        plan = self._make_plan_with([TaskType.FEEDING, TaskType.FETCH])
+        feedings = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
+        fetches  = [s for s in plan.scheduled if s.task.task_type == TaskType.FETCH]
+        for feed in feedings:
+            for fetch in fetches:
+                feed_end    = _mins(feed.end_time)
+                fetch_start = _mins(fetch.start_time)
+                if fetch_start >= feed_end:
+                    assert fetch_start >= feed_end + POST_FEEDING_GAP
+
+    def test_walk_not_scheduled_within_gap_of_feeding(self):
+        plan = self._make_plan_with([TaskType.FEEDING, TaskType.WALK])
+        feedings = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
+        walks    = [s for s in plan.scheduled if s.task.task_type == TaskType.WALK]
+        for feed in feedings:
+            for walk in walks:
+                feed_end   = _mins(feed.end_time)
+                walk_start = _mins(walk.start_time)
+                if walk_start >= feed_end:
+                    assert walk_start >= feed_end + POST_FEEDING_GAP
+
+    def test_playtime_not_scheduled_within_gap_of_feeding(self):
+        plan = self._make_plan_with([TaskType.FEEDING, TaskType.PLAYTIME])
+        feedings  = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
+        playtimes = [s for s in plan.scheduled if s.task.task_type == TaskType.PLAYTIME]
+        for feed in feedings:
+            for play in playtimes:
+                feed_end   = _mins(feed.end_time)
+                play_start = _mins(play.start_time)
+                if play_start >= feed_end:
+                    assert play_start >= feed_end + POST_FEEDING_GAP
+
+    def test_vigorous_tasks_is_subset_of_activity_tasks(self):
+        assert VIGOROUS_TASKS.issubset(ACTIVITY_TASKS)
+
+    def test_post_feeding_gap_is_positive(self):
+        assert POST_FEEDING_GAP > 0
+
+
+# ---------------------------------------------------------------------------
+# Scheduler enforces minimum gap between feeding end and medication start
+# ---------------------------------------------------------------------------
+
+class TestSchedulerEnforcedMedFeedingGap:
+    def test_scheduler_places_medication_after_min_gap(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        feeding    = Task(TaskType.FEEDING,    frequency=1)
+        medication = Task(TaskType.MEDICATION, frequency=1, dependencies=[feeding])
+        dog.add_task(feeding)
+        dog.add_task(medication)
+        owner.add_pet(dog)
+        plan = Scheduler(owner, dog).generate_plan()
+        feed_sts = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
+        med_sts  = [s for s in plan.scheduled if s.task.task_type == TaskType.MEDICATION]
+        assert feed_sts and med_sts
+        assert _mins(med_sts[0].start_time) >= _mins(feed_sts[0].end_time) + _MIN_MED_FEEDING_GAP
+
+
+# ---------------------------------------------------------------------------
+# Scheduler enforces minimum gap between recurring care task occurrences
+# ---------------------------------------------------------------------------
+
+class TestSchedulerEnforcesCareTaskGap:
+    def _feeding_starts(self, plan):
+        return sorted(
+            _mins(s.start_time)
+            for s in plan.scheduled if s.task.task_type == TaskType.FEEDING
+        )
+
+    def test_two_feedings_spaced_by_min_gap(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        dog.add_task(Task(TaskType.FEEDING, frequency=2))
+        owner.add_pet(dog)
+        starts = self._feeding_starts(Scheduler(owner, dog).generate_plan())
+        assert len(starts) == 2
+        assert starts[1] - starts[0] >= _MIN_CARE_TASK_GAP[TaskType.FEEDING]
+
+    def test_three_feedings_all_spaced_by_min_gap(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(7, 0), time(23, 0))
+        dog = Pet("Mochi", "dog")
+        dog.add_task(Task(TaskType.FEEDING, frequency=3))
+        owner.add_pet(dog)
+        starts = self._feeding_starts(Scheduler(owner, dog).generate_plan())
+        assert len(starts) == 3
+        min_gap = _MIN_CARE_TASK_GAP[TaskType.FEEDING]
+        for i in range(len(starts) - 1):
+            assert starts[i + 1] - starts[i] >= min_gap
+
+    def test_feeding_not_back_to_back_in_tight_window(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(20, 0))
+        dog = Pet("Mochi", "dog")
+        dog.add_task(Task(TaskType.FEEDING, frequency=2))
+        owner.add_pet(dog)
+        starts = self._feeding_starts(Scheduler(owner, dog).generate_plan())
+        if len(starts) == 2:
+            assert starts[1] - starts[0] >= _MIN_CARE_TASK_GAP[TaskType.FEEDING]
+
+
+# ---------------------------------------------------------------------------
+# Scheduler respects per-task earliest/latest time constraints
+# ---------------------------------------------------------------------------
+
+class TestSchedulerRespectsWindowConstraints:
+    def test_scheduler_places_task_after_earliest(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        dog.add_task(Task(TaskType.GROOMING, duration_minutes=30, frequency=1, earliest=time(14, 0)))
+        owner.add_pet(dog)
+        plan = Scheduler(owner, dog).generate_plan()
+        grooms = [s for s in plan.scheduled if s.task.task_type == TaskType.GROOMING]
+        assert grooms
+        assert _mins(grooms[0].start_time) >= _mins(time(14, 0))
+
+    def test_scheduler_places_task_before_latest(self):
+        owner = Owner("Jordan")
+        owner.add_window(time(8, 0), time(18, 0))
+        dog = Pet("Mochi", "dog")
+        dog.add_task(Task(TaskType.GROOMING, duration_minutes=30, frequency=1, latest=time(10, 0)))
+        owner.add_pet(dog)
+        plan = Scheduler(owner, dog).generate_plan()
+        grooms = [s for s in plan.scheduled if s.task.task_type == TaskType.GROOMING]
+        assert grooms
+        assert _mins(grooms[0].end_time) <= _mins(time(10, 0))

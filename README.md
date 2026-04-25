@@ -1,186 +1,319 @@
-# PawPal+ (Module 2 Project)
+# PawPal+ — AI-Powered Pet Care Scheduler
 
-A rule-based daily pet care planner built with Python and Streamlit.
-An owner describes their availability and their pets' care tasks; the scheduler
-produces a time-blocked daily plan that respects priority, dependencies, and
-recurring-task spacing.
+**Applied AI Final Project** | CodePath | Spring 2026
 
 ---
 
-## System Overview
+## Original Project
 
-### Classes
-
-| Class | Responsibility |
-|-------|---------------|
-| `TaskType` | Enum of every supported care activity (19 types across walks, feeding, hygiene, enrichment, reptile/fish care) |
-| `Task` | A single care activity with duration, frequency, priority, optional time constraints, dependency list, and completion status |
-| `AvailabilityWindow` | A contiguous free block in the owner's day (start time → end time) |
-| `Owner` | The person caring for the pets; holds availability windows and a list of pets |
-| `Pet` | A named animal of a given type; holds a list of Tasks with `add_task()` and `list_tasks()` (sorted by priority) |
-| `ScheduledTask` | One occurrence of a Task placed at a specific start/end time, with a human-readable reason |
-| `DailyPlan` | The output of a scheduling run: a list of ScheduledTasks and any warning strings |
-| `Scheduler` | Accepts an Owner and Pet; `generate_plan()` schedules a single pet, `generate_all_plans()` schedules all pets on the owner sharing a common busy-slot pool |
-
-### Algorithmic features
-
-1. **Composite urgency scoring** _(stretch feature — see Agent Mode note below)_ — instead of sorting by raw priority number, each task receives a weighted urgency score: `(6 - priority) × 10 + frequency × 2 - duration × 0.1`. Priority remains dominant (weight 10 per level), but frequency breaks ties among same-priority tasks — a walk needed 3×/day is harder to fit than medication needed 1×/day and is scheduled first. Duration applies a small penalty so shorter tasks are preferred when all else is equal, since they fit into more gaps and leave larger free blocks. Tasks are then scheduled greedily in descending urgency order; any task that cannot be placed generates a warning.
-
-2. **Priority-first greedy scheduling** — tasks are sorted by urgency score (above) before slot assignment; lower-urgency tasks are dropped when time runs out, and a warning is added to the plan.
-
-3. **Dependency resolution via topological sort** — if Task B depends on Task A, a DFS walk of the dependency graph ensures A is always scheduled before B.
-
-4. **Target-time spacing for recurring tasks** — for a task that repeats N times, the day is divided into N equal intervals and each occurrence is targeted to the start of its interval. `_find_slot` then finds the nearest free slot at or after that target, preventing all occurrences from collapsing to back-to-back.
-
-5. **Gap threshold warnings** — after scheduling, consecutive occurrences of feeding, medication, litter box, and misting tasks are checked against configurable maximum-gap thresholds. Gaps that exceed the threshold produce a human-readable warning in the plan.
-
-6. **Shared busy-slot pool across multiple pets** — `generate_all_plans()` maintains a single list of occupied time slots that is passed into each pet's scheduling run in turn, so no two pets are ever assigned the same owner time slot.
-
-### Agent Mode note — composite urgency scoring (feature 1)
-
-Feature 1 was designed and implemented using Claude Code in Agent Mode. The problem: simple priority sorting left same-priority tasks ordered arbitrarily, so a medication needed once a day could be scheduled before a walk needed three times a day even though the walk is harder to fit. I described the goal to the agent — "break priority ties using frequency and duration" — and asked it to propose a scoring formula, write a failing test first, then implement the method. The agent proposed the weighted formula, flagged that priority needed to remain dominant (otherwise the existing `test_high_priority_scheduled_before_low_priority` would break), and chose the weights (10 per priority level, 2 per frequency occurrence, -0.1 per minute of duration) accordingly. I verified correctness by running all 15 tests and checking manually that Walk (p=1, f=3) scores 53, Feeding (p=1, f=2) scores 52.5, and Grooming (p=3, f=1) scores 29 — the ordering matches intuition.
+**PawPal** (Modules 1–3) was a rule-based daily pet care planner built with Python and Streamlit. An owner describes their available hours and their pets' care tasks; the scheduler produces a time-blocked daily plan that respects task priority, dependency ordering (e.g., medication after feeding), and recurring-task spacing. It used no external AI — all scheduling decisions came from a deterministic greedy algorithm with composite urgency scoring.
 
 ---
 
-## Data Persistence
+## What PawPal+ Adds
 
-Owner configuration (name, availability windows, pets, and tasks) is saved to `pawpal_save.json` and reloaded on demand so settings survive between application runs.
+PawPal+ extends the original with three substantial AI features:
 
-The logic lives in `persistence.py`, which provides:
-- `owner_to_dict(owner)` / `dict_to_owner(data)` — serialize/deserialize an `Owner` object tree
-- `save(data)` / `load()` — write and read the JSON file
-- `save_exists()` — check whether a save file is present
+1. **Agentic conflict-detection and repair loop** — after the scheduler runs, a `ScheduleAgent` detects conflicts (overlaps, dependency violations, gap violations, window violations) and calls the Google Gemini 2.5 Flash Lite API iteratively to propose and apply fixes, up to five rounds, until the schedule is clean.
 
-In the **Streamlit app**, a sidebar "Save settings" / "Load settings" button pair captures the current form state into the same JSON format and restores it by rewriting session state and triggering a rerun — so the form repopulates exactly as it was left.
+2. **Coverage window suggestions** — when conflicts cannot be resolved within the owner's existing hours, the system calculates specific time windows where a dog walker or pet sitter would close the gap, and displays them in the UI.
 
-In **`main.py`**, the demo saves Jordan's configuration at the end of the script and immediately reloads it, printing the reconstructed pet list to confirm round-trip fidelity.
-
-### Agent Mode note — persistence layer
-
-This feature required coordinated changes across three files (`persistence.py` new, `app.py` updated, `main.py` updated) with no single obvious place to start. I used Claude Code in Agent Mode to orchestrate the work: described the desired JSON schema, asked the agent to design the module boundary (pure I/O layer vs. session-state helpers inside `app.py`), and had it generate all three file changes in sequence. The key design decision the agent surfaced was to keep `persistence.py` free of Streamlit imports — the session-state ↔ dict translation lives in `app.py` so the persistence module stays testable independently. I verified the round-trip worked by running `main.py` and confirming the reloaded pet names and task counts matched the original.
+3. **Breed-tuned task defaults** — a trie-based breed database adjusts task duration and frequency multipliers for age group and energy level (e.g., a senior high-energy dog has longer walk durations than a puppy at low energy).
 
 ---
 
-## Advanced Scheduling Logic
+## Architecture Overview
 
-Two pieces of complex scheduling logic are implemented and observable in both the CLI demo and the Streamlit UI:
+  ```mermaid
+  flowchart TD
+      A([User — Streamlit UI or CLI]) -->|owner availability\npet type + breed| B
 
-**Priority-based urgency scoring** (`Scheduler._urgency_score`) — tasks are not simply sorted by a priority number. A weighted composite score combines priority level (dominant factor), frequency demand, and duration to determine scheduling order. A walk needed 3×/day outranks medication needed 1×/day even when both have the same priority, because the walk competes harder for slots. This is visible in `main.py` output (the "tasks by priority" block shows urgency order before the schedule is printed) and in the Streamlit UI (the generated plan reflects this ordering).
+      B[Breed DB\nBreedTrie prefix search] -->|age/energy multipliers\napplied to duration +
+  frequency| C
 
-**Time-blocking to prevent overlapping tasks** (`Scheduler.generate_all_plans`) — a single `shared_busy` list of occupied time slots is passed into each pet's scheduling run in turn. Once a slot is taken by Mochi's walk, Luna's feeding cannot be placed there. In `main.py`, no two rows in the unified schedule share a time range. In the Streamlit UI, multi-pet plans are combined into one time-ordered list with no gaps or overlaps. This behavior is also directly verified by the `test_two_pets_no_time_overlap` test.
+      C[Scheduler\nmodels.py] -->|urgency scoring\ndependency sort\nslot assignment| D
+
+      D[DailyPlan\nScheduledTask list + warnings]
+
+      D --> E{Conflict Detector\nconflict_detector.py}
+
+      E -->|7 conflict types:\noverlap · dependency · timeout\noutside_window ·
+  gap\nmed_feeding_gap · post_feeding_gap| F{Conflicts\nfound?}
+
+      F -->|No| G([Final Schedule\ndisplayed to user])
+
+      F -->|Yes| H[ScheduleAgent\nagent.py]
+
+      H -->|schedule + conflicts\nas structured prompt| I[Gemini 2.5 Flash Lite\nLLM API]
+
+      I -->|JSON fix\naction · task · from_time · to_time| J[Apply Fix\n_apply_fix]
+
+      J -->|re-detect| E
+
+      H -->|max 5 iterations\nunresolved conflicts remain| K[Coverage
+  Window\nSuggestions\ndog walker · pet sitter]
+
+      G --> L([Human Review\nuser inspects plan\nin UI])
+      K --> L
+
+      L -->|save| M[(pawpal_save.json\nPersistence)]
+      M -->|load| A
+
+      subgraph Testing ["Automated Testing (pytest)"]
+          T1[test_scheduler.py\n36 tests — Scheduler behavior]
+          T2[test_agent.py\n103 tests — ConflictDetector\nAgent parsing · BreedTrie]
+          T3[demo_agent.py\n3 scenarios — manual\nend-to-end verification]
+      end
+
+      C -.->|validates| T1
+      E -.->|validates| T2
+      H -.->|validates| T2
+      G -.->|verifies| T3
+  ```
+
+**Key files:**
+
+| File | Role |
+|---|---|
+| `models.py` | Data model + Scheduler algorithm |
+| `conflict_detector.py` | Conflict detection + coverage suggestions |
+| `agent.py` | Gemini-powered iterative repair loop |
+| `breed_db.py` | Trie-based breed lookup + multipliers |
+| `app.py` | Streamlit UI |
+| `main.py` | CLI demo (no API key needed) |
+| `demo_agent.py` | 3-scenario agent demo (requires API key) |
+| `persistence.py` | JSON save / load |
+| `test_scheduler.py` | 15 unit tests for Scheduler |
+| `test_agent.py` | 122 unit tests for conflict detector + agent parsing + breed trie |
 
 ---
 
-## Running the demo
+## Setup Instructions
+
+**Requirements:** Python 3.11+, a Google Gemini API key (free tier works).
 
 ```bash
+# 1. Clone and enter the repo
+git clone <repo-url>
+cd pawpal-applied-ai-final
+
+# 2. Create a virtual environment
 python -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# 3. Install dependencies
 pip install -r requirements.txt
 
-python main.py
+# 4. Set your Gemini API key (needed for agent features only)
+export GEMINI_API_KEY="your-key-here"   # Windows: set GEMINI_API_KEY=your-key-here
 ```
 
-`main.py` creates one owner (Jordan) with three availability windows, two pets
-(Mochi the dog and Luna the cat), and 5 tasks each. It prints each pet's tasks
-sorted by urgency score, runs the scheduler, prints a unified time-ordered plan,
-marks all tasks complete, then saves the configuration to `pawpal_save.json` and
-reloads it to verify the round-trip.
+**Run the CLI demo** (no API key required):
+```bash
+python main.py
+```
+Creates owner Jordan with two pets (Mochi the dog, Luna the cat), schedules their tasks, and saves/reloads the configuration.
 
-## Running the Streamlit app
-
+**Run the Streamlit UI** (no API key required to generate schedules; key needed for "Fix conflicts with AI"):
 ```bash
 streamlit run app.py
 ```
 
-Opens a browser UI where you can enter owner availability, pick a pet type,
-select and configure tasks, and generate a plan interactively.
-
-## Running the tests
-
+**Run the agentic demo** (requires `GEMINI_API_KEY`):
 ```bash
-python -m pytest test_scheduler.py -v
+python demo_agent.py
 ```
+Runs three pre-built conflict scenarios through the full detect → repair → verify loop.
 
-All 15 tests should pass. The suite covers:
-
-- `AvailabilityWindow.duration_minutes()` arithmetic
-- Task default values and partial overrides
-- Task completion (`mark_complete()` flips `completed` flag)
-- Task list sorted by priority (`list_tasks()` returns ascending order)
-- Urgency score frequency tie-breaking (high-frequency same-priority tasks scheduled first)
-- Happy-path scheduling (enough time → all tasks scheduled, no warnings)
-- Priority ordering (high-priority task appears before low-priority task)
-- Capacity enforcement (too little time → some tasks dropped)
-- Warning generation when tasks are dropped
-- Feeding gap warning absent when feedings are close together
-- Feeding gap warning present when feedings are forced far apart
-- Recurring task spacing (3 walks spread ≥ 90 min apart across a 10-hour day)
-- Two-pet no-overlap (tasks for different pets never share the same time slot)
-- Dependency ordering (Medication always follows Feeding)
+**Run all tests:**
+```bash
+python -m pytest test_scheduler.py test_agent.py -v
+```
 
 ---
 
-## AI Reflection
+## Sample Interactions
 
-This project was built collaboratively with Claude (claude-sonnet-4-6) throughout
-the full design-and-implementation cycle. Here is an honest account of how that
-shaped the final result.
+### Example 1 — Simple overlap, resolved in one iteration
 
-### What the AI suggested and I accepted
+**Setup:** Alex's dog Buddy has a 30-min morning walk (08:00–08:30) and a 15-min feeding accidentally placed at 08:20, overlapping by 10 minutes.
 
-- **Using a Python `Enum` for `TaskType`** instead of plain strings. AI initially
-  thought of tasks as strings; I pointed out that an enum gives autocomplete,
-  prevents typos, and makes `dict` lookups safe. It made the code noticeably cleaner.
+**Conflict detected:**
+```
+[OVERLAP] Morning Walk (Buddy, 08:00–08:30) overlaps Feeding (Buddy, 08:20–08:35)
+  Hint: Move Feeding to 08:30 or later
+```
 
-- **`_TASK_DEFAULTS` as a module-level dict** keyed by `TaskType`. The AI proposed
-  this as an alternative to hardcoding defaults inside `__init__`. It keeps all
-  default values in one place and makes them easy to scan or extend.
+**AI suggestion (Iteration 1):**
+```
+Move Feeding from 08:20 to 08:30
+```
 
-- **Topological sort for dependency resolution**. The scheduler needs to honor
-  "Medication must follow Feeding" without the caller specifying an explicit order.
-  The AI proposed a DFS visit over the dependency graph inside `_sort_by_priority`.
-  I accepted it after tracing through the logic manually.
+**Final schedule:**
+```
+08:00–08:30: Morning Walk (Buddy)
+08:30–08:45: Feeding (Buddy)
+All conflicts resolved in 1 iteration.
+```
 
-- **Target-time spacing** to replace a greedy cursor approach. The first version
-  of the scheduler scheduled all occurrences of a recurring task back-to-back.
-  The AI proposed dividing the day into equal intervals and targeting each
-  occurrence to the start of its interval, then finding the nearest free slot.
-  This fixed the clustering problem without adding much complexity.
+---
 
-- **`PET_TASK_DEFAULTS`** as a UI-only preset dict (not part of the data model).
-  When the AI wanted the app to pre-select sensible tasks for a given pet type, I
-  suggested keeping this as a presentation-layer lookup rather than baking
-  pet-type logic into the `Pet` or `Task` classes, which kept the model clean.
+### Example 2 — Multi-pet cascade, resolved in two iterations
 
-### What the AI suggested and I rejected or modified
+**Setup:** Jordan has Mochi (dog) and Luna (cat). Mochi has a walk/feeding overlap; Luna has a feeding/litter-box overlap.
 
-- **An LLM-powered reasoning layer** for explaining scheduling decisions. The AI
-  offered this early in the conversation. I rejected it — rule-based logic was the
-  right fit for this assignment and far easier to test and reason about.
+**Conflicts detected (2):**
+```
+[OVERLAP] Morning Walk (Mochi, 08:00–08:30) overlaps Feeding (Mochi, 08:20–08:35)
+[OVERLAP] Feeding (Luna, 10:00–10:15) overlaps Litter box (Luna, 10:10–10:20)
+```
 
-- **A `TaskTemplate` class** to separate "task definition" from "task instance."
-  The AI floated this to handle the case where multiple pets share the same task
-  type with different settings. I decided it was over-engineering for a single-pet-
-  per-run use case; initializing `Task` with overridable defaults was sufficient.
+**Agent loop:**
+```
+Iteration 1: 2 conflict(s) found → Move Feeding from 08:20 to 08:30
+Iteration 2: 1 conflict(s) found → Move Litter box from 10:10 to 10:15
+All conflicts resolved in 2 iterations.
+```
 
-- **JSON persistence** I suggested this as a natural next step. We deferred it deliberately — the assignment does not require it and adding it would have distracted from the core scheduling logic.
+---
 
-### How correctness was verified
+### Example 3 — Dependency violation (medication before feeding)
 
-Each algorithmic feature has at least one dedicated test that can fail in a
-meaningful way:
+**Setup:** Sam's dog Max needs medication after eating. The schedule has Medication at 08:00, but Feeding isn't until 09:00 — violating the declared dependency.
 
-- The spacing test (`test_recurring_tasks_spread_across_day`) asserts that each
-  consecutive walk is ≥ 90 minutes after the previous one — it would catch any
-  regression in the interval calculation.
-- The gap warning tests use two fixtures: one where feedings are close (no warning
-  expected) and one where two 1-hour windows are 11 hours apart (warning expected).
-  Both are needed; the positive case alone is not sufficient.
-- The dependency test checks list index ordering, not just presence, ensuring the
-  topological sort actually places Feeding before Medication.
-- I had to actually run the app to notice some things, like we'd created all of the logic but there was no UI component that let you use the logic (like multiple owners, multiple pets per owner).
+**Conflict detected:**
+```
+[DEPENDENCY] Medication (Max) starts at 08:00 before dependency Feeding ends at 09:15
+  Hint: Move Medication to after 09:15
+```
 
-The AI flagged that an early version of the gap warning test only covered the
-no-warning case, which would pass even if the warning logic were completely broken.
-Adding the positive case (`test_feeding_gap_triggers_warning`) was the right call.
+**AI suggestion (Iteration 1):**
+```
+Move Medication from 08:00 to 09:15
+```
+
+**Final schedule:**
+```
+09:00–09:15: Feeding (Max)
+09:15–09:20: Medication (Max)
+All conflicts resolved in 1 iteration.
+```
+
+---
+
+## Design Decisions and Trade-offs
+
+**Gemini 2.5 Flash Lite over a larger model.**
+The task is narrow and structured — the AI only needs to parse a schedule and output one line. Flash Lite is fast and cheap. A larger model would add latency and cost with no observable quality gain for this format-constrained output.
+
+**Strict one-line output format enforced in the prompt.**
+The agent prompt says: "Reply with ONLY one line. Use EXACTLY this format: Move [task name] from HH:MM to HH:MM." Unparseable responses fall back to returning the plan unchanged. This is a guardrail: the system never crashes on a bad AI response, and it never silently applies a misinterpreted fix.
+
+**Rule-based scheduling, AI for repair only.**
+The original scheduler uses a deterministic algorithm. Letting the AI handle initial scheduling would make the system unpredictable and untestable. The AI is confined to a well-defined repair role where every suggestion can be validated by re-running conflict detection.
+
+**Seven conflict types, each with a `suggested_fix` hint sent to the AI.**
+Rather than asking the AI to reason from scratch about how to fix a conflict, the prompt includes a specific hint (`"Move Feeding to 08:30 or later"`). This dramatically reduces hallucination risk — the AI is nudged toward the right class of fix without being given the full answer.
+
+**Trie for breed lookup instead of semantic search.**
+Owners type in a breed name. Trie prefix search is O(k) per lookup (k = string length), requires no model, and handles partial matches ("Golden" → "Golden Retriever"). A vector store would add infrastructure cost and complexity with no benefit for exact or prefix-match queries.
+
+**Trade-offs accepted:**
+- The AI fix parser uses regex, so suggestions in unexpected phrasing are silently dropped. A more robust parser (or structured JSON output from the model) would improve reliability but would add latency via a tool-use round-trip.
+- Breed data is hardcoded. A real product would pull from a maintained database.
+- No authentication. The app is single-user.
+
+---
+
+## Testing Summary
+
+**137 tests across two suites, all passing.**
+
+```
+pytest test_scheduler.py test_agent.py -v
+...
+137 passed in X.XXs
+```
+
+**`test_scheduler.py` — 15 tests covering the scheduling core:**
+- Availability window duration arithmetic
+- Task defaults and partial overrides
+- `mark_complete()` flag behavior
+- Priority-sorted task list
+- Urgency score frequency tie-breaking (high-frequency same-priority tasks scheduled first)
+- Happy-path scheduling (all tasks fit, no warnings)
+- Priority ordering in output plan
+- Capacity enforcement (tasks dropped when time runs out)
+- Warning generation when tasks are dropped
+- Gap warning absent when feedings are close together
+- Gap warning present when feedings are forced 11 hours apart
+- Recurring task spacing (3 walks spread ≥ 90 min apart across a 10-hour day)
+- Two-pet no-overlap (no time slot shared across pets)
+- Dependency ordering (Medication always follows Feeding)
+
+**`test_agent.py` — 122 tests covering the AI layer:**
+- Clean schedule returns zero conflicts
+- Overlap detection and non-detection (adjacent tasks are not overlaps)
+- Gap threshold detection for feedings, medication, and walks
+- Dependency violation detection (dependent task before dependency)
+- Window violation detection (task before its earliest / after its latest)
+- Post-feeding gap detection (vigorous activity too soon after eating)
+- Med-feeding gap detection (medication too soon after feeding)
+- AI fix parser: "Move X from HH:MM to HH:MM", "Move X to HH:MM", "Swap X and Y"
+- Parser robustness: parenthetical pet names stripped, case-insensitive, from-time disambiguates duplicate task names
+- Breed trie: prefix search, exact match, case folding, unknown breed returns None
+- Breed attribute retrieval (energy level, age group, multiplier values)
+- Multiplier constants: duration/frequency multipliers by age group and energy level
+- Multiplier application: scheduler output reflects breed-derived adjustments
+- Scheduler integration with breed tuner (end-to-end with real objects)
+
+**What worked:** Rule-based conflict detection is highly testable — every conflict type has a precise definition and a dedicated test fixture. The AI parser tests proved essential: an early version of the regex didn't strip trailing parenthetical pet names (`"Move Feeding to 08:30 (Mochi)"`), which caused silent failures.
+
+**What didn't work initially:** Testing the AI agent itself requires a live API key, so the agent's `fix_schedule()` method is not covered by automated tests. The three scenarios in `demo_agent.py` serve as manual end-to-end verification. A future improvement would be to mock the Gemini client and test the full loop with canned responses.
+
+**What I learned:** Writing the positive and negative cases for gap warnings together (gap present / gap absent) was more valuable than either test alone. The positive case would pass even if the warning logic were broken; you need the negative case to know the threshold logic is actually being checked.
+
+---
+
+## Reflection and Ethics
+
+### Limitations and biases
+
+- **Breed data is hardcoded and incomplete.** The trie covers common breeds but will silently return `None` for mixed breeds, rare breeds, or misspellings. The system falls back to defaults, but it won't tell the user it couldn't find a match.
+- **The AI fix parser is fragile.** If Gemini phrases a suggestion in a way the regex doesn't match — e.g., "Reschedule Feeding to 08:30" instead of "Move Feeding to 08:30" — the fix is silently skipped and the conflict persists. The user sees the conflict remain without knowing why.
+- **No medical knowledge.** The post-feeding gap (30 min before vigorous activity) and medication timing rules are hardcoded heuristics. For animals with specific conditions, these rules could be wrong.
+- **Single-user, no persistence of agent history.** The iterative repair history is shown in the UI but not saved. There is no way to audit why the AI made a particular change after the session ends.
+
+### Could this be misused?
+
+The risks are low — it's a pet scheduling app, not a medical decision system. The most realistic misuse would be a user ignoring conflict warnings and following an AI-suggested schedule that is medically inappropriate for their pet (e.g., exercising a dog with a heart condition). Mitigations: display disclaimers that the app is not a substitute for veterinary advice, and surface unresolved conflicts clearly rather than hiding them.
+
+### What surprised me during testing
+
+The AI reliably suggested moving the *dependent* task rather than the dependency in Scenario 3 (medication before feeding). This was not guaranteed — the prompt explains the rule, but I expected the model to occasionally suggest moving the feeding earlier instead. Across multiple runs, it consistently followed the constraint in the prompt. What was less reliable was handling of tasks with the same name across different pets. Without the "from HH:MM" disambiguation, the parser would sometimes move the wrong pet's task, which led to adding the from-time pattern as the preferred regex branch.
+
+### AI collaboration
+
+**Helpful suggestion — urgency scoring formula:**
+When I described the problem (same-priority tasks scheduled in arbitrary order), I asked Claude to propose a scoring formula that kept priority dominant while breaking ties on frequency and duration. It proposed `(6 − priority) × 10 + frequency × 2 − duration × 0.1`, and correctly identified that the priority weight needed to be large enough that no combination of frequency and duration bonuses could cause a lower-priority task to outscore a higher-priority one. I verified this by computing edge-case scores manually before accepting it.
+
+**Flawed suggestion — LLM for initial scheduling:**
+Early in development, Claude suggested replacing the deterministic scheduler with an LLM that would "reason" about the optimal daily plan. I rejected this. Rule-based scheduling is deterministic, reproducible, and directly testable — all properties that matter for a correctness-critical feature. An LLM scheduler would be a black box that could produce different plans on identical inputs. The right division of labor is: deterministic algorithm for scheduling, AI for conflict repair.
+
+**Flawed suggestion — moving the dependency instead of the dependent task:**
+An early version of the prompt for Scenario 3 didn't include the rule "never move the dependency itself." Claude's first suggested fix was to move Feeding earlier so that Medication could stay at 08:00. This was wrong — Feeding's time was already intentional. Adding the explicit rule to the prompt fixed the behavior, but it highlighted that AI suggestions need domain-specific constraints baked into the prompt rather than relying on the model to infer them.
+
+---
+
+## Running the Tests (Quick Reference)
+
+```bash
+# All 137 tests
+python -m pytest test_scheduler.py test_agent.py -v
+
+# Scheduler only (15 tests, no API key needed)
+python -m pytest test_scheduler.py -v
+
+# Agent + conflict detector + breed (122 tests, no API key needed)
+python -m pytest test_agent.py -v
+```

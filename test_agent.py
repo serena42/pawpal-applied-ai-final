@@ -10,7 +10,7 @@ import pytest
 from datetime import time
 
 from models import (
-    Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, Scheduler, _to_time, _mins,
+    Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, _to_time, _mins,
     ENERGY_DURATION_MULT, ENERGY_FREQUENCY_MULT,
     AGE_DURATION_MULT, AGE_FREQUENCY_MULT, AGE_FEEDING_FREQUENCY_MULT,
     ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP,
@@ -205,32 +205,46 @@ class TestSwapTasks:
 
 
 class TestApplyFix:
-    def test_parses_move_suggestion(self, agent):
+    def test_move_without_from_time(self, agent):
         st = make_st(TaskType.FEEDING, "Feeding", 480, 15)
         plans = single_pet_plans(sts=[st])
-        result = agent._apply_fix(plans, "Move Feeding to 09:30")
-        updated = result["Buddy"].scheduled[0]
-        assert updated.start_time == _to_time(9 * 60 + 30)
+        fix = {"action": "move", "task": "Feeding", "to_time": "09:30"}
+        result = agent._apply_fix(plans, fix)
+        assert result["Buddy"].scheduled[0].start_time == _to_time(9 * 60 + 30)
 
-    def test_parses_move_from_to_suggestion(self, agent):
+    def test_move_with_from_time_disambiguates(self, agent):
         st = make_st(TaskType.FEEDING, "Feeding", 480, 15)
         plans = single_pet_plans(sts=[st])
-        result = agent._apply_fix(plans, "Move Feeding from 08:00 to 09:00")
+        fix = {"action": "move", "task": "Feeding", "from_time": "08:00", "to_time": "09:00"}
+        result = agent._apply_fix(plans, fix)
         assert result["Buddy"].scheduled[0].start_time == _to_time(540)
 
-    def test_parses_swap_suggestion(self, agent):
+    def test_swap_exchanges_times(self, agent):
         st_a = make_st(TaskType.WALK, "Walk", 480, 30)
         st_b = make_st(TaskType.FEEDING, "Feeding", 510, 15)
         plans = single_pet_plans(sts=[st_a, st_b])
-        result = agent._apply_fix(plans, "Swap Walk and Feeding")
+        fix = {"action": "swap", "task_a": "Walk", "task_b": "Feeding"}
+        result = agent._apply_fix(plans, fix)
         scheduled = result["Buddy"].scheduled
         walk = next(s for s in scheduled if s.task.name == "Walk")
         assert walk.start_time == _to_time(510)
 
-    def test_unparseable_suggestion_returns_unchanged(self, agent):
+    def test_none_action_returns_unchanged(self, agent):
         st = make_st(TaskType.WALK, "Walk", 480, 30)
         plans = single_pet_plans(sts=[st])
-        result = agent._apply_fix(plans, "I am not sure what to do here.")
+        result = agent._apply_fix(plans, {"action": "none"})
+        assert result["Buddy"].scheduled[0].start_time == _to_time(480)
+
+    def test_missing_to_time_returns_unchanged(self, agent):
+        st = make_st(TaskType.WALK, "Walk", 480, 30)
+        plans = single_pet_plans(sts=[st])
+        result = agent._apply_fix(plans, {"action": "move", "task": "Walk"})
+        assert result["Buddy"].scheduled[0].start_time == _to_time(480)
+
+    def test_empty_dict_returns_unchanged(self, agent):
+        st = make_st(TaskType.WALK, "Walk", 480, 30)
+        plans = single_pet_plans(sts=[st])
+        result = agent._apply_fix(plans, {})
         assert result["Buddy"].scheduled[0].start_time == _to_time(480)
 
 
@@ -434,37 +448,6 @@ class TestMultiplierApplication:
 
 
 # ---------------------------------------------------------------------------
-# Scheduler integration: energy/age multipliers affect plan task durations
-# ---------------------------------------------------------------------------
-
-class TestSchedulerWithBreedTuner:
-    def _make_plan(self, energy: str, age: str, base_dur: int = 30, base_freq: int = 1):
-        owner = Owner("Tester")
-        owner.add_window(time(8, 0), time(20, 0))
-        pet = Pet("Buddy", "dog", energy_level=energy, age_group=age)
-        dur, freq = _apply(base_dur, base_freq, TaskType.WALK, energy, age)
-        pet.add_task(Task(TaskType.WALK, duration_minutes=dur, frequency=freq))
-        owner.add_pet(pet)
-        return Scheduler(owner, pet).generate_plan()
-
-    def test_very_high_energy_walk_longer_than_low(self):
-        plan_hi  = self._make_plan("very_high", "adult")
-        plan_low = self._make_plan("low", "adult")
-        dur_hi  = plan_hi.scheduled[0].task.duration_minutes
-        dur_low = plan_low.scheduled[0].task.duration_minutes
-        assert dur_hi > dur_low
-
-    def test_puppy_walk_scheduled_more_frequently(self):
-        plan_puppy = self._make_plan("medium", "puppy", base_freq=2)
-        plan_adult = self._make_plan("medium", "adult", base_freq=2)
-        assert len(plan_puppy.scheduled) >= len(plan_adult.scheduled)
-
-    def test_medium_adult_walk_uses_base_duration(self):
-        plan = self._make_plan("medium", "adult", base_dur=30)
-        assert plan.scheduled[0].task.duration_minutes == 30
-
-
-# ---------------------------------------------------------------------------
 # Fix #1: Post-feeding gap before vigorous activity
 # ---------------------------------------------------------------------------
 
@@ -516,59 +499,6 @@ class TestPostFeedingGapDetection:
         pfg = [c for c in conflicts if c.conflict_type == "post_feeding_gap"]
         assert len(pfg) == 1
         assert "08:45" in pfg[0].suggested_fix  # 8:15 + 30 min = 8:45
-
-
-class TestSchedulerEnforcesPostFeedingGap:
-    def _make_plan_with(self, task_types):
-        owner = Owner("Jordan")
-        owner.add_window(time(8, 0), time(18, 0))
-        dog = Pet("Mochi", "dog")
-        for tt in task_types:
-            dog.add_task(Task(tt, frequency=1))
-        owner.add_pet(dog)
-        return Scheduler(owner, dog).generate_plan()
-
-    def test_fetch_not_scheduled_within_gap_of_feeding(self):
-        plan = self._make_plan_with([TaskType.FEEDING, TaskType.FETCH])
-        feedings = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
-        fetches  = [s for s in plan.scheduled if s.task.task_type == TaskType.FETCH]
-        for feed in feedings:
-            for fetch in fetches:
-                feed_end = _mins(feed.end_time)
-                fetch_start = _mins(fetch.start_time)
-                if fetch_start >= feed_end:
-                    assert fetch_start >= feed_end + POST_FEEDING_GAP, (
-                        f"Fetch starts at {fetch.start_time}, only "
-                        f"{fetch_start - feed_end} min after feeding ends at {feed.end_time}"
-                    )
-
-    def test_walk_not_scheduled_within_gap_of_feeding(self):
-        plan = self._make_plan_with([TaskType.FEEDING, TaskType.WALK])
-        feedings = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
-        walks    = [s for s in plan.scheduled if s.task.task_type == TaskType.WALK]
-        for feed in feedings:
-            for walk in walks:
-                feed_end = _mins(feed.end_time)
-                walk_start = _mins(walk.start_time)
-                if walk_start >= feed_end:
-                    assert walk_start >= feed_end + POST_FEEDING_GAP
-
-    def test_playtime_not_scheduled_within_gap_of_feeding(self):
-        plan = self._make_plan_with([TaskType.FEEDING, TaskType.PLAYTIME])
-        feedings  = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
-        playtimes = [s for s in plan.scheduled if s.task.task_type == TaskType.PLAYTIME]
-        for feed in feedings:
-            for play in playtimes:
-                feed_end = _mins(feed.end_time)
-                play_start = _mins(play.start_time)
-                if play_start >= feed_end:
-                    assert play_start >= feed_end + POST_FEEDING_GAP
-
-    def test_vigorous_tasks_is_subset_of_activity_tasks(self):
-        assert VIGOROUS_TASKS.issubset(ACTIVITY_TASKS)
-
-    def test_post_feeding_gap_is_positive(self):
-        assert POST_FEEDING_GAP > 0
 
 
 # ---------------------------------------------------------------------------
@@ -672,25 +602,6 @@ class TestMedFeedingGapDetection:
         assert len(mfg) == 0
 
 
-class TestSchedulerEnforcedMedFeedingGap:
-    def test_scheduler_places_medication_after_min_gap(self):
-        owner = Owner("Jordan")
-        owner.add_window(time(8, 0), time(18, 0))
-        dog = Pet("Mochi", "dog")
-        feeding = Task(TaskType.FEEDING, frequency=1)
-        medication = Task(TaskType.MEDICATION, frequency=1, dependencies=[feeding])
-        dog.add_task(feeding)
-        dog.add_task(medication)
-        owner.add_pet(dog)
-        plan = Scheduler(owner, dog).generate_plan()
-        feed_sts = [s for s in plan.scheduled if s.task.task_type == TaskType.FEEDING]
-        med_sts  = [s for s in plan.scheduled if s.task.task_type == TaskType.MEDICATION]
-        assert feed_sts and med_sts
-        feed_end  = _mins(feed_sts[0].end_time)
-        med_start = _mins(med_sts[0].start_time)
-        assert med_start >= feed_end + _MIN_MED_FEEDING_GAP
-
-
 # ---------------------------------------------------------------------------
 # Fix #4: Enforce minimum gap between care task occurrences
 # ---------------------------------------------------------------------------
@@ -707,50 +618,6 @@ class TestCareTaskGapConstants:
 
     def test_misting_gap_is_at_least_2_hours(self):
         assert _MIN_CARE_TASK_GAP[TaskType.MISTING] >= 2 * 60
-
-
-class TestSchedulerEnforcesCareTaskGap:
-    def _feeding_starts(self, plan):
-        return sorted(
-            _mins(s.start_time)
-            for s in plan.scheduled if s.task.task_type == TaskType.FEEDING
-        )
-
-    def test_two_feedings_spaced_by_min_gap(self):
-        owner = Owner("Jordan")
-        owner.add_window(time(8, 0), time(18, 0))
-        dog = Pet("Mochi", "dog")
-        dog.add_task(Task(TaskType.FEEDING, frequency=2))
-        owner.add_pet(dog)
-        plan = Scheduler(owner, dog).generate_plan()
-        starts = self._feeding_starts(plan)
-        assert len(starts) == 2
-        assert starts[1] - starts[0] >= _MIN_CARE_TASK_GAP[TaskType.FEEDING]
-
-    def test_three_feedings_all_spaced_by_min_gap(self):
-        owner = Owner("Jordan")
-        owner.add_window(time(7, 0), time(23, 0))  # 16-hour window for 3 feedings
-        dog = Pet("Mochi", "dog")
-        dog.add_task(Task(TaskType.FEEDING, frequency=3))
-        owner.add_pet(dog)
-        plan = Scheduler(owner, dog).generate_plan()
-        starts = self._feeding_starts(plan)
-        assert len(starts) == 3
-        min_gap = _MIN_CARE_TASK_GAP[TaskType.FEEDING]
-        for i in range(len(starts) - 1):
-            assert starts[i + 1] - starts[i] >= min_gap
-
-    def test_feeding_not_back_to_back_in_tight_window(self):
-        """Even with a short window, scheduler should never place two feedings immediately adjacent."""
-        owner = Owner("Jordan")
-        owner.add_window(time(8, 0), time(20, 0))
-        dog = Pet("Mochi", "dog")
-        dog.add_task(Task(TaskType.FEEDING, frequency=2))
-        owner.add_pet(dog)
-        plan = Scheduler(owner, dog).generate_plan()
-        starts = self._feeding_starts(plan)
-        if len(starts) == 2:
-            assert starts[1] - starts[0] >= _MIN_CARE_TASK_GAP[TaskType.FEEDING]
 
 
 # ---------------------------------------------------------------------------
@@ -847,34 +714,6 @@ class TestWindowViolationDetection:
         conflicts = detect_conflicts(plans, owner, [])
         wv = [c for c in conflicts if c.conflict_type == "window_violation"]
         assert "10:00" in wv[0].suggested_fix
-
-
-class TestSchedulerRespectsWindowConstraints:
-    def test_scheduler_places_task_after_earliest(self):
-        owner = Owner("Jordan")
-        owner.add_window(time(8, 0), time(18, 0))
-        dog = Pet("Mochi", "dog")
-        task = Task(TaskType.GROOMING, duration_minutes=30, frequency=1,
-                    earliest=time(14, 0))
-        dog.add_task(task)
-        owner.add_pet(dog)
-        plan = Scheduler(owner, dog).generate_plan()
-        grooms = [s for s in plan.scheduled if s.task.task_type == TaskType.GROOMING]
-        assert grooms
-        assert _mins(grooms[0].start_time) >= _mins(time(14, 0))
-
-    def test_scheduler_places_task_before_latest(self):
-        owner = Owner("Jordan")
-        owner.add_window(time(8, 0), time(18, 0))
-        dog = Pet("Mochi", "dog")
-        task = Task(TaskType.GROOMING, duration_minutes=30, frequency=1,
-                    latest=time(10, 0))
-        dog.add_task(task)
-        owner.add_pet(dog)
-        plan = Scheduler(owner, dog).generate_plan()
-        grooms = [s for s in plan.scheduled if s.task.task_type == TaskType.GROOMING]
-        assert grooms
-        assert _mins(grooms[0].end_time) <= _mins(time(10, 0))
 
 
 # ---------------------------------------------------------------------------

@@ -83,8 +83,8 @@ PawPal+ extends the original with three substantial AI features:
 | `main.py` | CLI demo (no API key needed) |
 | `demo_agent.py` | 3-scenario agent demo (requires API key) |
 | `persistence.py` | JSON save / load |
-| `test_scheduler.py` | 15 unit tests for Scheduler |
-| `test_agent.py` | 122 unit tests for conflict detector + agent parsing + breed trie |
+| `test_scheduler.py` | 36 unit tests for Scheduler |
+| `test_agent.py` | 103 unit tests for conflict detector + agent parsing + breed trie |
 
 ---
 
@@ -206,8 +206,8 @@ All conflicts resolved in 1 iteration.
 **Gemini 2.5 Flash Lite over a larger model.**
 The task is narrow and structured — the AI only needs to parse a schedule and output one line. Flash Lite is fast and cheap. A larger model would add latency and cost with no observable quality gain for this format-constrained output.
 
-**Strict one-line output format enforced in the prompt.**
-The agent prompt says: "Reply with ONLY one line. Use EXACTLY this format: Move [task name] from HH:MM to HH:MM." Unparseable responses fall back to returning the plan unchanged. This is a guardrail: the system never crashes on a bad AI response, and it never silently applies a misinterpreted fix.
+**JSON structured output enforced in the prompt.**
+The agent requests `response_mime_type="application/json"` from Gemini and defines an exact schema (`action`, `task`, `from_time`, `to_time`). Invalid or missing responses fall back to returning the plan unchanged — the system never crashes on a bad AI response.
 
 **Rule-based scheduling, AI for repair only.**
 The original scheduler uses a deterministic algorithm. Letting the AI handle initial scheduling would make the system unpredictable and untestable. The AI is confined to a well-defined repair role where every suggestion can be validated by re-running conflict detection.
@@ -219,101 +219,25 @@ Rather than asking the AI to reason from scratch about how to fix a conflict, th
 Owners type in a breed name. Trie prefix search is O(k) per lookup (k = string length), requires no model, and handles partial matches ("Golden" → "Golden Retriever"). A vector store would add infrastructure cost and complexity with no benefit for exact or prefix-match queries.
 
 **Trade-offs accepted:**
-- The AI fix parser uses regex, so suggestions in unexpected phrasing are silently dropped. A more robust parser (or structured JSON output from the model) would improve reliability but would add latency via a tool-use round-trip.
 - Breed data is hardcoded. A real product would pull from a maintained database.
 - No authentication. The app is single-user.
 
 ---
 
-## Testing Summary
+## Testing
 
-**137 tests across two suites, all passing.**
-
-```
-pytest test_scheduler.py test_agent.py -v
-...
-137 passed in X.XXs
-```
-
-**`test_scheduler.py` — 15 tests covering the scheduling core:**
-- Availability window duration arithmetic
-- Task defaults and partial overrides
-- `mark_complete()` flag behavior
-- Priority-sorted task list
-- Urgency score frequency tie-breaking (high-frequency same-priority tasks scheduled first)
-- Happy-path scheduling (all tasks fit, no warnings)
-- Priority ordering in output plan
-- Capacity enforcement (tasks dropped when time runs out)
-- Warning generation when tasks are dropped
-- Gap warning absent when feedings are close together
-- Gap warning present when feedings are forced 11 hours apart
-- Recurring task spacing (3 walks spread ≥ 90 min apart across a 10-hour day)
-- Two-pet no-overlap (no time slot shared across pets)
-- Dependency ordering (Medication always follows Feeding)
-
-**`test_agent.py` — 122 tests covering the AI layer:**
-- Clean schedule returns zero conflicts
-- Overlap detection and non-detection (adjacent tasks are not overlaps)
-- Gap threshold detection for feedings, medication, and walks
-- Dependency violation detection (dependent task before dependency)
-- Window violation detection (task before its earliest / after its latest)
-- Post-feeding gap detection (vigorous activity too soon after eating)
-- Med-feeding gap detection (medication too soon after feeding)
-- AI fix parser: "Move X from HH:MM to HH:MM", "Move X to HH:MM", "Swap X and Y"
-- Parser robustness: parenthetical pet names stripped, case-insensitive, from-time disambiguates duplicate task names
-- Breed trie: prefix search, exact match, case folding, unknown breed returns None
-- Breed attribute retrieval (energy level, age group, multiplier values)
-- Multiplier constants: duration/frequency multipliers by age group and energy level
-- Multiplier application: scheduler output reflects breed-derived adjustments
-- Scheduler integration with breed tuner (end-to-end with real objects)
-
-**What worked:** Rule-based conflict detection is highly testable — every conflict type has a precise definition and a dedicated test fixture. The AI parser tests proved essential: an early version of the regex didn't strip trailing parenthetical pet names (`"Move Feeding to 08:30 (Mochi)"`), which caused silent failures.
-
-**What didn't work initially:** Testing the AI agent itself requires a live API key, so the agent's `fix_schedule()` method is not covered by automated tests. The three scenarios in `demo_agent.py` serve as manual end-to-end verification. A future improvement would be to mock the Gemini client and test the full loop with canned responses.
-
-**What I learned:** Writing the positive and negative cases for gap warnings together (gap present / gap absent) was more valuable than either test alone. The positive case would pass even if the warning logic were broken; you need the negative case to know the threshold logic is actually being checked.
-
----
-
-## Reflection and Ethics
-
-### Limitations and biases
-
-- **Breed data is hardcoded and incomplete.** The trie covers common breeds but will silently return `None` for mixed breeds, rare breeds, or misspellings. The system falls back to defaults, but it won't tell the user it couldn't find a match.
-- **The AI fix parser is fragile.** If Gemini phrases a suggestion in a way the regex doesn't match — e.g., "Reschedule Feeding to 08:30" instead of "Move Feeding to 08:30" — the fix is silently skipped and the conflict persists. The user sees the conflict remain without knowing why.
-- **No medical knowledge.** The post-feeding gap (30 min before vigorous activity) and medication timing rules are hardcoded heuristics. For animals with specific conditions, these rules could be wrong.
-- **Single-user, no persistence of agent history.** The iterative repair history is shown in the UI but not saved. There is no way to audit why the AI made a particular change after the session ends.
-
-### Could this be misused?
-
-The risks are low — it's a pet scheduling app, not a medical decision system. The most realistic misuse would be a user ignoring conflict warnings and following an AI-suggested schedule that is medically inappropriate for their pet (e.g., exercising a dog with a heart condition). Mitigations: display disclaimers that the app is not a substitute for veterinary advice, and surface unresolved conflicts clearly rather than hiding them.
-
-### What surprised me during testing
-
-The AI reliably suggested moving the *dependent* task rather than the dependency in Scenario 3 (medication before feeding). This was not guaranteed — the prompt explains the rule, but I expected the model to occasionally suggest moving the feeding earlier instead. Across multiple runs, it consistently followed the constraint in the prompt. What was less reliable was handling of tasks with the same name across different pets. Without the "from HH:MM" disambiguation, the parser would sometimes move the wrong pet's task, which led to adding the from-time pattern as the preferred regex branch.
-
-### AI collaboration
-
-**Helpful suggestion — urgency scoring formula:**
-When I described the problem (same-priority tasks scheduled in arbitrary order), I asked Claude to propose a scoring formula that kept priority dominant while breaking ties on frequency and duration. It proposed `(6 − priority) × 10 + frequency × 2 − duration × 0.1`, and correctly identified that the priority weight needed to be large enough that no combination of frequency and duration bonuses could cause a lower-priority task to outscore a higher-priority one. I verified this by computing edge-case scores manually before accepting it.
-
-**Flawed suggestion — LLM for initial scheduling:**
-Early in development, Claude suggested replacing the deterministic scheduler with an LLM that would "reason" about the optimal daily plan. I rejected this. Rule-based scheduling is deterministic, reproducible, and directly testable — all properties that matter for a correctness-critical feature. An LLM scheduler would be a black box that could produce different plans on identical inputs. The right division of labor is: deterministic algorithm for scheduling, AI for conflict repair.
-
-**Flawed suggestion — moving the dependency instead of the dependent task:**
-An early version of the prompt for Scenario 3 didn't include the rule "never move the dependency itself." Claude's first suggested fix was to move Feeding earlier so that Medication could stay at 08:00. This was wrong — Feeding's time was already intentional. Adding the explicit rule to the prompt fixed the behavior, but it highlighted that AI suggestions need domain-specific constraints baked into the prompt rather than relying on the model to infer them.
-
----
-
-## Running the Tests (Quick Reference)
+**139 tests, all passing.**
 
 ```bash
-# All 137 tests
-python -m pytest test_scheduler.py test_agent.py -v
-
-# Scheduler only (15 tests, no API key needed)
-python -m pytest test_scheduler.py -v
-
-# Agent + conflict detector + breed (122 tests, no API key needed)
-python -m pytest test_agent.py -v
+python -m pytest test_scheduler.py test_agent.py -v   # all 139
+python -m pytest test_scheduler.py -v                 # 36 — Scheduler behavior
+python -m pytest test_agent.py -v                     # 103 — conflict detector, agent, breed trie
 ```
+
+The agent's live API loop is verified manually via `python demo_agent.py` (3 scenarios, no mocking).
+
+---
+
+## Reflection, Ethics, and AI Collaboration
+
+See [model_card.md](model_card.md) — covers limitations, bias, misuse potential, testing results, and AI collaboration examples.

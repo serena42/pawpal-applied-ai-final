@@ -1,9 +1,16 @@
+"""Gemini-powered coverage summary helper for PawPal+."""
+
 import os
+
 from google import genai
+
 from models import _mins
 
 
+ # pylint: disable=too-few-public-methods
 class ScheduleAgent:
+    """Wrap Gemini client calls used to summarize coverage for owners."""
+
     MODEL = "gemini-2.5-flash-lite"
 
     def __init__(self):
@@ -13,6 +20,7 @@ class ScheduleAgent:
     # Coverage summary — the primary AI feature in the current system
     # ------------------------------------------------------------------
 
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     def summarize_coverage(self, plans: dict, conflicts: list,
                            coverage: list, owner, pets) -> str:
         """
@@ -28,9 +36,10 @@ class ScheduleAgent:
                 contents=prompt,
             )
             return response.text or "Unable to generate summary."
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             return "Unable to generate summary — check your API key."
 
+    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     def _build_summary_prompt(self, plans: dict, conflicts: list,
                               coverage: list, owner, pets) -> str:
         windows_str = ", ".join(

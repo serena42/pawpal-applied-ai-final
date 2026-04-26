@@ -1,5 +1,7 @@
-import streamlit as st
+"""Streamlit UI for PawPal+."""
+
 from datetime import time
+import streamlit as st
 from models import (
     Task, TaskType, Owner, Pet, Scheduler,
     PET_TASK_DEFAULTS, TASK_EMOJI, PET_EMOJI,
@@ -7,7 +9,7 @@ from models import (
     AGE_DURATION_MULT, AGE_FREQUENCY_MULT, AGE_FEEDING_FREQUENCY_MULT,
     ACTIVITY_TASKS,
 )
-from persistence import save, load, save_exists, owner_to_dict
+from persistence import save, load, save_exists
 from conflict_detector import detect_conflicts, detect_suggested_slots, suggest_coverage_windows
 from agent import ScheduleAgent
 from breed_db import get_trie
@@ -20,19 +22,19 @@ TASK_LABELS: dict[TaskType, str] = {tt: tt.value.capitalize() for tt in TaskType
 LABEL_TO_TYPE: dict[str, TaskType] = {v: k for k, v in TASK_LABELS.items()}
 PET_TYPES = ["dog", "cat", "rabbit", "bird", "snake", "iguana", "fish", "other"]
 _ENERGY_OPTS = ["low", "medium", "high", "very_high"]
-_AGE_OPTS    = ["puppy", "adult", "senior"]
+_AGE_OPTS    = ["young", "adult", "senior"]
 
 
-def _apply_breed(pid: int, breed_map: dict) -> None:
-    sel = st.session_state.get(f"p{pid}_breed_suggestion")
+def _apply_breed(pet_id: int, breed_map: dict) -> None:
+    sel = st.session_state.get(f"p{pet_id}_breed_suggestion")
     if sel and sel in breed_map:
-        st.session_state[f"p{pid}_energy_level"] = breed_map[sel]["energy_level"]
+        st.session_state[f"p{pet_id}_energy_level"] = breed_map[sel]["energy_level"]
 
 
-def _reset_tasks_for_type(pid: int) -> None:
+def _reset_tasks_for_type(pet_id: int) -> None:
     """Called when pet type selectbox changes — resets task list to type-appropriate defaults."""
-    new_type = st.session_state.get(f"p{pid}_type", "dog")
-    st.session_state[f"p{pid}_tasks"] = [
+    new_type = st.session_state.get(f"p{pet_id}_type", "dog")
+    st.session_state[f"p{pet_id}_tasks"] = [
         TASK_LABELS[tt] for tt in PET_TASK_DEFAULTS.get(new_type, [TaskType.FEEDING])
     ]
 
@@ -68,23 +70,23 @@ def _session_to_dict() -> dict:
         for wid in st.session_state.win_ids
     ]
     pets = []
-    for pid in st.session_state.pet_ids:
+    for pet_id in st.session_state.pet_ids:
         tasks = [
             {
-                "task_type":        LABEL_TO_TYPE[label].value,
-                "duration_minutes": int(st.session_state.get(f"p{pid}_{label}_d", 15)),
-                "frequency":        int(st.session_state.get(f"p{pid}_{label}_f", 1)),
-                "priority":         int(st.session_state.get(f"p{pid}_{label}_p", 1)),
+                "task_type":        LABEL_TO_TYPE[task_label].value,
+                "duration_minutes": int(st.session_state.get(f"p{pet_id}_{task_label}_d", 15)),
+                "frequency":        int(st.session_state.get(f"p{pet_id}_{task_label}_f", 1)),
+                "priority":         int(st.session_state.get(f"p{pet_id}_{task_label}_p", 1)),
                 "completed":        False,
             }
-            for label in st.session_state.get(f"p{pid}_tasks", [])
+            for task_label in st.session_state.get(f"p{pet_id}_tasks", [])
         ]
         pets.append({
-            "name":         st.session_state.get(f"p{pid}_name", ""),
-            "type":         st.session_state.get(f"p{pid}_type", "dog"),
-            "breed":        st.session_state.get(f"p{pid}_breed", ""),
-            "energy_level": st.session_state.get(f"p{pid}_energy_level", "medium"),
-            "age_group":    st.session_state.get(f"p{pid}_age_group", "adult"),
+            "name":         st.session_state.get(f"p{pet_id}_name", ""),
+            "type":         st.session_state.get(f"p{pet_id}_type", "dog"),
+            "breed":        st.session_state.get(f"p{pet_id}_breed", ""),
+            "energy_level": st.session_state.get(f"p{pet_id}_energy_level", "medium"),
+            "age_group":    st.session_state.get(f"p{pet_id}_age_group", "adult"),
             "tasks":        tasks,
         })
     return {
@@ -100,32 +102,34 @@ def _dict_to_session(data: dict) -> None:
 
     st.session_state.win_ids = []
     st.session_state.next_win_id = 0
-    for w in data["windows"]:
-        wid = st.session_state.next_win_id
-        st.session_state.win_ids.append(wid)
-        h, m = map(int, w["start"].split(":"))
-        st.session_state[f"w{wid}_start"] = time(h, m)
-        h2, m2 = map(int, w["end"].split(":"))
-        st.session_state[f"w{wid}_end"] = time(h2, m2)
+    for window in data["windows"]:
+        window_id = st.session_state.next_win_id
+        st.session_state.win_ids.append(window_id)
+        start_hour, start_minute = map(int, window["start"].split(":"))
+        st.session_state[f"w{window_id}_start"] = time(start_hour, start_minute)
+        end_hour, end_minute = map(int, window["end"].split(":"))
+        st.session_state[f"w{window_id}_end"] = time(end_hour, end_minute)
         st.session_state.next_win_id += 1
 
     st.session_state.pet_ids = []
     st.session_state.next_pet_id = 0
-    for p in data["pets"]:
-        pid = st.session_state.next_pet_id
-        st.session_state.pet_ids.append(pid)
-        st.session_state[f"p{pid}_name"]         = p["name"]
-        st.session_state[f"p{pid}_type"]         = p["type"]
-        st.session_state[f"p{pid}_breed"]        = p.get("breed", "")
-        st.session_state[f"p{pid}_energy_level"] = p.get("energy_level", "medium")
-        st.session_state[f"p{pid}_age_group"]    = p.get("age_group", "adult")
-        labels = [TASK_LABELS[TaskType(td["task_type"])] for td in p["tasks"]]
-        st.session_state[f"p{pid}_tasks"] = labels
-        for td in p["tasks"]:
-            label = TASK_LABELS[TaskType(td["task_type"])]
-            st.session_state[f"p{pid}_{label}_d"] = td["duration_minutes"]
-            st.session_state[f"p{pid}_{label}_f"] = td["frequency"]
-            st.session_state[f"p{pid}_{label}_p"] = td["priority"]
+    for pet_data in data["pets"]:
+        pet_id = st.session_state.next_pet_id
+        st.session_state.pet_ids.append(pet_id)
+        st.session_state[f"p{pet_id}_name"]         = pet_data["name"]
+        st.session_state[f"p{pet_id}_type"]         = pet_data["type"]
+        st.session_state[f"p{pet_id}_breed"]        = pet_data.get("breed", "")
+        st.session_state[f"p{pet_id}_energy_level"] = pet_data.get("energy_level", "medium")
+        st.session_state[f"p{pet_id}_age_group"]    = pet_data.get("age_group", "adult")
+        task_labels = []
+        for task_data in pet_data["tasks"]:
+            task_labels.append(TASK_LABELS[TaskType(task_data["task_type"])])
+        st.session_state[f"p{pet_id}_tasks"] = task_labels
+        for task_data in pet_data["tasks"]:
+            task_label = TASK_LABELS[TaskType(task_data["task_type"])]
+            st.session_state[f"p{pet_id}_{task_label}_d"] = task_data["duration_minutes"]
+            st.session_state[f"p{pet_id}_{task_label}_f"] = task_data["frequency"]
+            st.session_state[f"p{pet_id}_{task_label}_p"] = task_data["priority"]
         st.session_state.next_pet_id += 1
 
 
@@ -433,16 +437,28 @@ if "_plans" in st.session_state:
 
             # After the last task before a suggested slot gap, insert the slot banner.
             entry_end_mins = entry.end_time.hour * 60 + entry.end_time.minute
+
+            def _to_minutes(clock: str) -> int:
+                hours, minutes = clock.split(":")
+                return int(hours) * 60 + int(minutes)
+
             for slot in suggested_slots:
                 if slot.pet_name == pet_name:
-                    slot_earliest_mins = int(slot.earliest[:2]) * 60 + int(slot.earliest[3:])
-                    slot_latest_mins   = int(slot.latest[:2])   * 60 + int(slot.latest[3:])
+                    slot_earliest_mins = _to_minutes(slot.earliest)
+                    slot_latest_mins = _to_minutes(slot.latest)
                     if slot_earliest_mins <= entry_end_mins <= slot_latest_mins:
-                        st.info(
-                            f"📅 **Suggested {slot.task_name} slot for {slot.pet_name}** &nbsp;|&nbsp; "
-                            f"Earliest: **{slot.earliest}** &nbsp; Latest: **{slot.latest}** &nbsp; "
-                            f"Recommended: **{slot.suggested}**  \n"
+                        slot_title = f"📅 **Suggested {slot.task_name} slot for {slot.pet_name}**"
+                        slot_window = (
+                            f"Earliest: **{slot.earliest}** &nbsp; "
+                            f"Latest: **{slot.latest}** &nbsp; "
+                            f"Recommended: **{slot.suggested}**"
+                        )
+                        message = (
+                            f"{slot_title} &nbsp;|&nbsp; {slot_window}  \n"
                             f"_{slot.reason}_"
+                        )
+                        st.info(
+                            message
                         )
     else:
         st.error("No tasks could be scheduled in the available time windows.")
@@ -460,7 +476,10 @@ if "_plans" in st.session_state:
     else:
         has_plan_warnings = any(plan.warnings for plan in all_plans.values())
         if has_plan_warnings:
-            st.info("No scheduling conflicts detected, but some tasks could not be fully scheduled — see warnings above.")
+            st.info(
+                "No scheduling conflicts detected, but some tasks could not be "
+                "fully scheduled — see warnings above."
+            )
         else:
             st.success("No conflicts — schedule is valid.")
 

@@ -1,79 +1,121 @@
 # PawPal+ Model Card
 
-## System Overview
+> Rubric-aligned reflection on design decisions, AI scope, risks, and validation.
 
-PawPal+ is a hybrid AI system that pairs a fully deterministic pet‑care scheduler with an LLM that provides natural‑language insight, context, and user guidance.  
-Over the course of development, the system evolved from relying on the LLM for conflict repair to eliminating those conflicts entirely through rule‑based logic — a deliberate shift toward correctness, reproducibility, and testability.
+## Overview
 
-The LLM now plays a higher‑value role: translating structured schedule output into personalized, behavior‑aware insights that help owners understand why the plan works and how to adapt it throughout the day.
+PawPal+ is a hybrid system that combines:
 
-**Intended use:** Personal, single-user daily pet care planning. Not a substitute for veterinary advice.
+- A fully deterministic pet-care scheduler for correctness-critical logic (task ordering, spacing, conflict prevention)
+- A lightweight LLM used only for natural-language explanations
 
----
+The scheduler handles execution logic, while the LLM summarizes coverage needs and provides behavior-aware pet-care insights.
 
-## Testing Results
+This model card documents:
 
-**128 tests, all passing.**
-
-```
-pytest test_scheduler.py test_agent.py -v
-128 passed in ~1.5s
-```
-
-| Suite | Tests | What it covers |
-|---|---|---|
-| `test_scheduler.py` | 36 | Scheduler behavior — urgency scoring, dependency ordering, gap enforcement, breed multipliers, time window constraints |
-| `test_agent.py` | 92 | Conflict detection (7 types), breed trie, multiplier constants, coverage window suggestions |
-
-The original fix_schedule() loop is no longer part of the production pipeline — all conflict types are now prevented by deterministic rules. The LLM is still exercised through the Streamlit UI, but its role is limited to generating explanations, summaries, and pet‑care insights rather than modifying the schedule itself.
-
-What worked: Formalizing every conflict type into explicit rules made the scheduler fully testable. Positive/negative fixtures for each rule caught subtle logic errors and ensured the engine produces conflict‑free plans without relying on AI repair.
-
-What changed: As the rule engine matured, the LLM’s repair role became unnecessary. This was a deliberate architectural improvement: correctness moved into deterministic logic, and the LLM shifted to interpretation and user‑facing guidance.
+- How AI influenced design decisions
+- What limitations and biases remain
+- How correctness was verified
 
 ---
 
-## Limitations and Biases
+## How AI Influenced Design Decisions
 
-- **Breed data is hardcoded.** The trie covers 50 common breeds. Mixed breeds, rare breeds, and misspellings fall back to defaults silently. *Future: integrate a public breed API (e.g., The Dog API) to expand coverage and remove the hardcoded list.*
+### AI Suggestions Accepted
 
-- **Hardcoded medical heuristics.** The 30‑minute post‑feeding gap and 10‑minute medication gap are generic defaults and may not apply to pets with specific conditions. *Future: expose these as per-task user-configurable parameters with a vet-provided override field.*
+#### 1. Urgency scoring exploration
+Early in development, I used the LLM to brainstorm tie-breaking strategies for tasks with identical priorities. Its suggestions helped me converge on a formula where priority dominates frequency and duration. I validated the final numbers manually, but the model accelerated the exploration phase.
 
-- **Insight generation is non‑medical.** The LLM provides behavioral and routine‑based suggestions, not veterinary advice. The disclaimer is surfaced in the UI; a future version could add a persistent banner. *Future: add a system-prompt guardrail that refuses to reframe behavioral tips as medical advice.*
+#### 2. Natural-language coverage summaries
+Once the scheduler became deterministic, the LLM's role shifted to interpretation. It now generates clear, personalized explanations of coverage windows and pet-care tips tailored to species, age group, and energy level.
 
-- **No agent history persistence.** Explanations and insights are session‑only. *Future: append summaries to a local log file so owners can review past recommendations.*
+### AI Suggestions Rejected
 
-- **Single‑user, no auth.** Anyone with the URL can edit the schedule. *Future: add a PIN or simple session token before deploying beyond localhost.*
+#### 1. Using an LLM as the scheduler
+The model repeatedly proposed replacing the rule-based scheduler with an LLM that "reasons" about optimal plans. This was intentionally rejected. Deterministic scheduling is reproducible, testable, and safe; LLM-generated schedules are not.
+
+#### 2. Dependency-movement suggestions
+The LLM sometimes proposed moving the dependency task (for example, Feeding) instead of the dependent task (for example, Medication). This revealed that domain rules must be explicit; the model will not infer them reliably.
+
+#### 3. Invented conflict scenarios
+The LLM occasionally described overlaps or reversed medication order that the deterministic scheduler would never produce. This led to removing the LLM from the scheduling loop entirely and redesigning the demo pipeline to use real scheduler output.
+
+### What Surprised Me
+
+#### Ambiguity in task names across pets
+When two pets had tasks with identical names ("Feeding"), the LLM's early repair suggestions exposed ambiguity in the internal data model. This led to requiring explicit `from_time` fields and clearer task identifiers, an improvement that persisted even after removing AI from scheduling.
+
+---
+
+## Biases and Limitations
+
+### System Limitations
+
+| Limitation | Current Behavior | Future Improvement |
+| --- | --- | --- |
+| Hardcoded breed database | The trie includes around 50 common breeds. Mixed breeds, rare breeds, and misspellings fall back to defaults silently. | Integrate a public breed API to expand coverage. |
+| Generic medical heuristics | The 30-minute post-feeding gap and 10-minute medication gap are generic defaults. Different medical conditions may require different timing. | Allow per-task overrides or vet-provided parameters. |
+
+### AI-Related Biases
+
+| Risk | Description | Mitigation |
+| --- | --- | --- |
+| Behavioral generalization | Without profile context, the LLM produces generic advice (for example, "make sure your dog gets exercise"). | Include species, age group, and energy level in prompts. |
+| Non-medical boundary confusion | The LLM is not allowed to generate medical advice, but users may still misinterpret suggestions as health guidance. | UI disclaimer and prompt guardrails. |
 
 ---
 
 ## Misuse Potential
 
-Risk is low — the scheduler enforces all safety‑critical constraints deterministically. The LLM’s insights are intentionally non‑medical and framed as general behavioral guidance. The primary misuse risk is a user interpreting insights as health advice. Mitigation: clear disclaimers and visible surfacing of any unresolved constraints.
+Risk is low because:
+
+- All safety-critical logic is deterministic.
+- The LLM cannot modify schedules.
+- Coverage windows are computed by rules, not AI.
+
+The main misuse risk is that a user may interpret behavioral insights as veterinary advice. This is mitigated through disclaimers and prompt guardrails.
 
 ---
 
-## What Surprised Me During Testing
+## Testing Strategy and Results
 
+### Automated Tests
 
-Tasks with identical names across pets (e.g., both pets have “Feeding”) required explicit disambiguation. This led to the requirement that all move actions include a from_time field. Although the LLM no longer performs moves, this insight improved the internal data model and reduced ambiguity in user‑facing explanations.
+**Status:** 128 tests, all passing.
+
+| Suite | Tests | Coverage Focus |
+| --- | ---: | --- |
+| `test_scheduler.py` | 36 | Urgency scoring, dependency ordering, gap enforcement, breed multipliers, time-window constraints |
+| `test_agent.py` | 92 | Conflict detection (7 types), breed trie, multiplier constants, coverage window suggestions |
+
+### Scenario-Based Evaluation
+
+`eval_coverage.py` runs 19 predefined checks across 6 realistic scenarios, including:
+
+- A control case where everything fits
+- Cases with dropped tasks
+- Cases with excessive gaps
+- Multi-pet households
+- Coverage window generation
+
+**Result:** all scenarios pass.
 
 ---
 
-## AI Collaboration
+## How Correctness Was Verified
 
-**Helpful — shaping the urgency scoring formula**
-Early in development, I used the LLM to explore tie‑breaking strategies for tasks with identical priorities. Its proposed formula helped surface the key requirement: the priority coefficient must dominate frequency and duration so that no combination of lower‑priority attributes can outrank a higher‑priority task. I validated the final numbers manually, but the model accelerated the exploration phase.
+- The scheduler is fully deterministic, so every output is reproducible.
+- Each conflict type was formalized into explicit rules and validated with positive and negative fixtures.
+- The LLM is not involved in scheduling, so correctness does not depend on AI behavior.
+- Coverage windows are computed algorithmically and tested directly.
 
-**Helpful — natural‑language insight generation (current role) ** 
-As the scheduler became fully deterministic, the LLM’s role shifted from repairing conflicts to interpreting the schedule. It now generates daily pet‑care insights, behavioral context, and user‑friendly explanations of why the plan is structured the way it is. This keeps correctness in the rule engine while letting the AI enhance clarity, personalization, and user engagement.
+---
 
-**Flawed — LLM as a scheduler (intentionally rejected) ** 
-The model repeatedly suggested replacing the rule‑based scheduler with an LLM that would “reason” about the optimal plan. This was discarded early. Deterministic scheduling is reproducible, testable, and safe; LLM‑generated schedules are not. This reinforced a core design principle: use algorithms for correctness, use AI for interpretation.
+## Future Improvements
 
-**Flawed — dependency‑movement suggestions ** 
-In early prompts, the LLM sometimes proposed moving the dependency task (e.g., Feeding) instead of the dependent task (e.g., Medication). This highlighted that domain rules must be stated explicitly — the model will not infer them. These failures informed clearer constraints and ultimately contributed to removing the LLM from the scheduling loop entirely.
-
-**Flawed — unrealistic conflict scenarios  **
-The LLM often suggested demo cases (overlaps, reversed medication order) that the deterministic scheduler would never produce. This led to a redesign of the demo pipeline: instead of hand‑crafted conflicts, the system now uses real generate_all_plans() output, and the LLM focuses on explanation rather than repair. This also led to the ralization that the schedule fix that was originally the LLM's job was completely codable. 
-
+- Expand breed database via API integration.
+- Add user-configurable medical timing overrides.
+- Persist AI-generated summaries for weekly review.
+- Add multi-caretaker scheduling with capability constraints.
+- Introduce weekly and monthly scheduling horizons.
+- Add RAG-grounded puppy-training curriculum support.

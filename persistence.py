@@ -14,7 +14,8 @@ JSON format:
       "name": "Mochi",
       "type": "dog",
       "tasks": [
-        {"task_type": "walk", "duration_minutes": 30, "frequency": 3, "priority": 1, "completed": false},
+        {"task_type": "walk", "duration_minutes": 30,
+         "frequency": 3, "priority": 1, "completed": false},
         ...
       ]
     },
@@ -98,13 +99,14 @@ def dict_to_owner(data: dict) -> Owner:
 
 def save(data: dict, filepath: Path = DEFAULT_SAVE_FILE) -> None:
     """Write a dict to a JSON file."""
-    filepath.write_text(json.dumps(data, indent=2))
+    filepath.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def load(filepath: Path = DEFAULT_SAVE_FILE) -> dict:
     """Read a JSON file and return its contents as a dict."""
-    return json.loads(filepath.read_text())
+    return json.loads(filepath.read_text(encoding="utf-8"))
 
 
 def save_exists(filepath: Path = DEFAULT_SAVE_FILE) -> bool:
+    """Return True when the save file exists on disk."""
     return filepath.exists()

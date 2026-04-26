@@ -1,10 +1,25 @@
+"""Conflict detection and coverage window suggestions for PawPal+."""
+
 import re
 from dataclasses import dataclass, field
-from models import _mins, _to_time, _GAP_THRESHOLDS, _MIN_ACTIVITY_GAP, ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP, TaskType, _MIN_MED_FEEDING_GAP
+
+from models import (
+    ACTIVITY_TASKS,
+    POST_FEEDING_GAP,
+    TaskType,
+    VIGOROUS_TASKS,
+    _GAP_THRESHOLDS,
+    _MIN_ACTIVITY_GAP,
+    _MIN_MED_FEEDING_GAP,
+    _mins,
+    _to_time,
+)
 
 
 @dataclass
 class Conflict:
+    """A detected scheduling problem, with a suggested remediation."""
+
     conflict_type: str  # "overlap", "dependency", "timeout", "outside_window", "gap"
     reason: str
     suggested_fix: str
@@ -16,7 +31,10 @@ def _t(t) -> str:
 
 
 def _overlap(st1, st2) -> bool:
-    return _mins(st1.start_time) < _mins(st2.end_time) and _mins(st2.start_time) < _mins(st1.end_time)
+    return (
+        _mins(st1.start_time) < _mins(st2.end_time)
+        and _mins(st2.start_time) < _mins(st1.end_time)
+    )
 
 
 def _in_any_window(windows, start_mins: int, end_mins: int) -> bool:
@@ -31,8 +49,11 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
     Return list of Conflict objects for a multi-pet schedule.
 
     plans: dict[pet_name, DailyPlan] — output of Scheduler.generate_all_plans()
-    Detects: overlap, dependency violation, timeout, outside availability window, recurrence gap.
+    Detects: overlap, dependency violation, timeout, outside availability
+    window, recurrence gap.
     """
+    # pylint: disable=unused-argument
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     conflicts = []
 
     # Flatten all scheduled tasks with pet context.
@@ -100,7 +121,10 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
                         f"{st.task.name} ({pet_name}) at {_t(st.start_time)}–{_t(st.end_time)} "
                         f"falls outside any availability window"
                     ),
-                    suggested_fix=f"Move {st.task.name} to within an available window: {window_str}",
+                    suggested_fix=(
+                        f"Move {st.task.name} to within an available window: "
+                        f"{window_str}"
+                    ),
                     task_keys=((pet_name, st.task.name),),
                 ))
 
@@ -125,7 +149,9 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
                             f"gap of {gap // 60}h {gap % 60}m between occurrences exceeds "
                             f"max {threshold // 60}h"
                         ),
-                        suggested_fix=f"Move the later {task_type.value} occurrence earlier",
+                        suggested_fix=(
+                            f"Move the later {task_type.value} occurrence earlier"
+                        ),
                         task_keys=(
                             (pet_name, occs[i].task.name),
                             (pet_name, occs[i + 1].task.name),
@@ -171,10 +197,11 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
                         conflict_type="med_feeding_gap",
                         reason=(
                             f"{med_st.task.name} ({pet_name}) starts at {_t(med_st.start_time)}, "
-                            f"only {gap_min} min after {feed_st.task.name} ends at {_t(feed_st.end_time)} "
-                            f"— allow at least {_MIN_MED_FEEDING_GAP} min for food to settle"
+                            f"only {gap_min} min after {feed_st.task.name} ends at "
+                            f"{_t(feed_st.end_time)} — allow at least "
+                            f"{_MIN_MED_FEEDING_GAP} min for food to settle"
                         ),
-                        suggested_fix=f"Move {med_st.task.name} to {ok_time} or later",
+                        suggested_fix=(f"Move {med_st.task.name} to {ok_time} or later"),
                         task_keys=((pet_name, feed_st.task.name), (pet_name, med_st.task.name)),
                     ))
 
@@ -193,10 +220,11 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
                         conflict_type="post_feeding_gap",
                         reason=(
                             f"{act_st.task.name} ({pet_name}) starts at {_t(act_st.start_time)}, "
-                            f"only {gap_min} min after {feed_st.task.name} ends at {_t(feed_st.end_time)} "
-                            f"— vigorous activity too soon after eating risks gastric torsion"
+                            f"only {gap_min} min after {feed_st.task.name} ends at "
+                            f"{_t(feed_st.end_time)} — vigorous activity too soon after "
+                            f"eating risks gastric torsion"
                         ),
-                        suggested_fix=f"Move {act_st.task.name} to {ok_time} or later",
+                        suggested_fix=(f"Move {act_st.task.name} to {ok_time} or later"),
                         task_keys=((pet_name, feed_st.task.name), (pet_name, act_st.task.name)),
                     ))
 
@@ -205,6 +233,8 @@ def detect_conflicts(plans: dict, owner, pets) -> list:
 
 @dataclass
 class SuggestedSlot:
+    """A suggested opening that would satisfy a recurring-task gap."""
+
     pet_name: str
     task_name: str
     earliest: str   # "HH:MM" — earliest time the slot is useful
@@ -218,7 +248,8 @@ def detect_suggested_slots(plans: dict, pets: list = None) -> list[SuggestedSlot
     Return suggested availability windows wherever same-type tasks violate the
     minimum inter-session gap. The recommended slot sits in the gap before the cluster.
     """
-    pet_map = {p.name: p for p in (pets or [])}
+    # pylint: disable=too-many-locals
+    _pet_map = {p.name: p for p in (pets or [])}
     slots = []
 
     for pet_name, plan in plans.items():
@@ -226,7 +257,7 @@ def detect_suggested_slots(plans: dict, pets: list = None) -> list[SuggestedSlot
         for st in plan.scheduled:
             by_type.setdefault(st.task.task_type, []).append(st)
 
-        pet = pet_map.get(pet_name)
+        pet = _pet_map.get(pet_name)
         for task_type, occs in by_type.items():
             if len(occs) < 2:
                 continue
@@ -275,7 +306,8 @@ def detect_suggested_slots(plans: dict, pets: list = None) -> list[SuggestedSlot
                         f"{task_type.value.capitalize()} sessions for {pet_name} are "
                         f"less than {gap_str} apart. A slot ending by "
                         f"{_to_time(latest_mins + dur).strftime('%H:%M')} would provide "
-                        f"the needed spacing before the {_to_time(cluster_block_start).strftime('%H:%M')} session."
+                        f"the needed spacing before the "
+                        f"{_to_time(cluster_block_start).strftime('%H:%M')} session."
                     ),
                 ))
                 break  # one suggestion per task type per pet
@@ -304,7 +336,8 @@ def suggest_coverage_windows(plans: dict, owner, pets) -> list[CoverageWindow]:
     - Walk/activity gaps that fall entirely inside an owner unavailability block
     - Tasks dropped from warnings (couldn't be scheduled at all)
     """
-    pet_map = {p.name: p for p in (pets or [])}
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    _pet_map = {p.name: p for p in (pets or [])}
     suggestions: list[CoverageWindow] = []
     seen: set = set()
 
@@ -401,7 +434,8 @@ def suggest_coverage_windows(plans: dict, owner, pets) -> list[CoverageWindow]:
                 tasks=["Walk"],
                 reason=(
                     f"A midday walk for {pet_name} isn't covered during your unavailability "
-                    f"({_to_time(block_start).strftime('%H:%M')}–{_to_time(block_end).strftime('%H:%M')}). "
+                    f"({_to_time(block_start).strftime('%H:%M')}–"
+                    f"{_to_time(block_end).strftime('%H:%M')}). "
                     f"A dog walker from {_to_time(cstart).strftime('%H:%M')} to "
                     f"{_to_time(cend).strftime('%H:%M')} fills the gap."
                 ),
@@ -467,7 +501,8 @@ def suggest_coverage_windows(plans: dict, owner, pets) -> list[CoverageWindow]:
                         f"occurrence(s) couldn't fit in the available windows. "
                         f"A {'dog walker' if is_walk_d else 'pet sitter'} from "
                         f"{_to_time(ideal_start).strftime('%H:%M')} to "
-                        f"{_to_time(ideal_end).strftime('%H:%M')} covers the missing occurrence."
+                        f"{_to_time(ideal_end).strftime('%H:%M')} covers the missing "
+                        f"occurrence."
                     ),
                 ))
 

@@ -8,6 +8,8 @@ Run:
     python eval_coverage.py
 """
 
+# pylint: disable=redefined-outer-name,too-many-locals
+
 from datetime import time
 from models import Owner, Pet, Task, TaskType, Scheduler
 from conflict_detector import detect_conflicts, suggest_coverage_windows
@@ -17,6 +19,7 @@ results: list[bool] = []
 
 
 def check(label: str, condition: bool, detail: str = "") -> bool:
+    """Print a PASS/FAIL line and store the result for the final summary."""
     status = "PASS" if condition else "FAIL"
     suffix = f"  (got: {detail})" if detail and not condition else ""
     print(f"  [{status}] {label}{suffix}")
@@ -25,9 +28,11 @@ def check(label: str, condition: bool, detail: str = "") -> bool:
 
 
 def _make_owner(name, windows, pets_spec):
-    """
+    """Build a demo owner with the requested windows and pets.
+
     windows:   list of (start_h, start_m, end_h, end_m)
-    pets_spec: list of (name, pet_type, age_group, [(TaskType, duration, frequency), ...])
+    pets_spec: list of (name, pet_type, age_group,
+                        [(TaskType, duration, frequency), ...])
     """
     owner = Owner(name=name)
     for sh, sm, eh, em in windows:
@@ -41,6 +46,7 @@ def _make_owner(name, windows, pets_spec):
 
 
 def _run(owner):
+    """Run the scheduler and downstream conflict/coverage checks for one owner."""
     plans    = Scheduler(owner, owner.pets[0]).generate_all_plans()
     conflicts = detect_conflicts(plans, owner, owner.pets)
     coverage  = suggest_coverage_windows(plans, owner, owner.pets)
@@ -195,8 +201,8 @@ print()
 # Summary
 # ---------------------------------------------------------------------------
 passed = sum(results)
-total  = len(results)
+TOTAL  = len(results)
 print(DIVIDER)
-print(f"  {passed}/{total} checks passed"
-      + ("  -- ALL PASS" if passed == total else f"  -- {total - passed} FAILED"))
+print(f"  {passed}/{TOTAL} checks passed"
+    + ("  -- ALL PASS" if passed == TOTAL else f"  -- {TOTAL - passed} FAILED"))
 print(DIVIDER)

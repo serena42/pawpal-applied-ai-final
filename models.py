@@ -1,3 +1,5 @@
+"""Core data models, defaults, and scheduling logic for PawPal+."""
+
 from __future__ import annotations
 from datetime import time
 from enum import Enum
@@ -5,6 +7,7 @@ from typing import Optional
 
 
 class TaskType(Enum):
+    """Supported task categories for pets and care workflows."""
     # Core care
     WALK           = "walk"
     FEEDING        = "feeding"
@@ -171,6 +174,9 @@ PET_TASK_DEFAULTS: dict[str, list[TaskType]] = {
 
 
 class Task:
+    """A single pet-care task with timing, frequency, and dependency data."""
+    # pylint: disable=too-many-instance-attributes,too-many-arguments,too-many-positional-arguments
+
     def __init__(
         self,
         task_type: TaskType,
@@ -194,19 +200,27 @@ class Task:
         self.completed: bool = False
 
     def mark_complete(self) -> None:
+        """Mark the task as completed."""
         self.completed = True
 
     def __repr__(self) -> str:
         status = "✓" if self.completed else "○"
-        return f"Task({self.name}, {self.frequency}x/day, {self.duration_minutes}min, priority={self.priority}, {status})"
+        return (
+            f"Task({self.name}, {self.frequency}x/day, {self.duration_minutes}min, "
+            f"priority={self.priority}, {status})"
+        )
 
 
+# pylint: disable=too-few-public-methods
 class AvailabilityWindow:
+    """A contiguous block of time during which the owner is available."""
+
     def __init__(self, start: time, end: time):
         self.start = start
         self.end = end
 
     def duration_minutes(self) -> int:
+        """Return the length of the window in minutes."""
         start_mins = self.start.hour * 60 + self.start.minute
         end_mins = self.end.hour * 60 + self.end.minute
         return end_mins - start_mins
@@ -216,23 +230,38 @@ class AvailabilityWindow:
 
 
 class Owner:
+    """The person whose availability and pets drive schedule generation."""
+
     def __init__(self, name: str):
         self.name = name
         self.availability_windows: list[AvailabilityWindow] = []
         self.pets: list[Pet] = []
 
     def add_window(self, start: time, end: time) -> None:
+        """Add an availability window to the owner's schedule."""
         self.availability_windows.append(AvailabilityWindow(start, end))
 
     def add_pet(self, pet: Pet) -> None:
+        """Attach a pet profile to the owner."""
         self.pets.append(pet)
 
     def __repr__(self) -> str:
-        return f"Owner({self.name}, {len(self.availability_windows)} windows, {len(self.pets)} pets)"
+        return (
+            f"Owner({self.name}, {len(self.availability_windows)} windows, "
+            f"{len(self.pets)} pets)"
+        )
 
 
 class Pet:
-    def __init__(self, name: str, pet_type: str, energy_level: str = "medium", age_group: str = "adult"):
+    """A pet profile with defaults that shape task generation and scheduling."""
+
+    def __init__(
+        self,
+        name: str,
+        pet_type: str,
+        energy_level: str = "medium",
+        age_group: str = "adult",
+    ):
         self.name = name
         self.pet_type = pet_type
         self.energy_level = energy_level
@@ -240,6 +269,7 @@ class Pet:
         self.tasks: list[Task] = []
 
     def add_task(self, task: Task) -> None:
+        """Add a task to the pet's task list."""
         self.tasks.append(task)
 
     def list_tasks(self) -> list[Task]:
@@ -247,10 +277,15 @@ class Pet:
         return sorted(self.tasks, key=lambda t: t.priority)
 
     def __repr__(self) -> str:
-        return f"Pet({self.name}, {self.pet_type}, {self.energy_level}, {self.age_group}, {len(self.tasks)} tasks)"
+        return (
+            f"Pet({self.name}, {self.pet_type}, {self.energy_level}, "
+            f"{self.age_group}, {len(self.tasks)} tasks)"
+        )
 
 
 class ScheduledTask:
+    """A task placed on the schedule with its realized start and end times."""
+
     def __init__(self, task: Task, start_time: time, end_time: time, reason: str):
         self.task = task
         self.start_time = start_time
@@ -262,6 +297,10 @@ class ScheduledTask:
 
 
 class DailyPlan:
+    """A schedule for one pet, including placed tasks and warning messages."""
+
+# pylint: disable=too-few-public-methods
+
     def __init__(self):
         self.scheduled: list[ScheduledTask] = []
         self.warnings: list[str] = []
@@ -290,6 +329,8 @@ _GAP_THRESHOLDS: dict[TaskType, int] = {
 
 
 class Scheduler:
+    """Deterministic planner that places tasks into availability windows."""
+
     def __init__(self, owner: Owner, pet: Pet):
         self.owner = owner
         self.pet = pet
@@ -302,7 +343,9 @@ class Scheduler:
             results[pet.name] = Scheduler(self.owner, pet).generate_plan(shared_busy)
         return results
 
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements,too-many-nested-blocks
     def generate_plan(self, shared_busy: Optional[list[tuple[int, int]]] = None) -> DailyPlan:
+        """Generate a deterministic plan for the current pet."""
         plan = DailyPlan()
         ordered = self._sort_by_priority()
 
@@ -447,13 +490,14 @@ class Scheduler:
         Duration applies a small penalty so shorter tasks of equal urgency are
         preferred — they fit in more gaps and leave larger blocks free.
         """
-        priority_weight  = (6 - task.priority) * 10   # 10–50; priority 1 → 50
-        frequency_weight = task.frequency * 2          # more occurrences = more urgent
-        duration_penalty = task.duration_minutes * 0.1 # shorter tasks fit more places
+        priority_weight = (6 - task.priority) * 10  # 10–50; priority 1 → 50
+        frequency_weight = task.frequency * 2  # more occurrences = more urgent
+        duration_penalty = task.duration_minutes * 0.1  # shorter tasks fit more places
         return priority_weight + frequency_weight - duration_penalty
 
     def _sort_by_priority(self) -> list[Task]:
-        """Return pet tasks sorted by urgency score with dependencies resolved via topological sort."""
+        """Return pet tasks sorted by urgency score with dependencies
+        resolved via topological sort."""
         pet_task_ids = {id(t) for t in self.pet.tasks}
         by_priority = sorted(self.pet.tasks, key=self._urgency_score, reverse=True)
 
@@ -503,12 +547,14 @@ class Scheduler:
                 if threshold is not None and gap > threshold:
                     warnings.append(
                         f"'{task_type.value.capitalize()}' gap of {gap // 60}h {gap % 60}m "
-                        f"between occurrences {i + 1} and {i + 2} — consider spacing them more evenly."
+                        f"between occurrences {i + 1} and {i + 2} — consider spacing "
+                        f"them more evenly."
                     )
                 if gap == 0 and len(occurrences) > 1:
                     warnings.append(
                         f"'{task_type.value.capitalize()}' occurrences {i + 1} and {i + 2} are "
-                        f"back-to-back — add a midday availability window to spread them out."
+                        f"back-to-back — add a midday availability window to spread "
+                        f"them out."
                     )
 
         return warnings

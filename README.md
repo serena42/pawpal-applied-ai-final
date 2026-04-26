@@ -2,7 +2,7 @@
 
 **Applied AI Final Project** | CodePath | Spring 2026
 
-PawPal+ helps pet owners plan their day when their schedule can't cover everything their pets need. A deterministic scheduler places care tasks within the owner's available hours; when tasks can't all fit or end up too far apart, the system computes specific coverage windows (🦮 dog walker / 🏠 pet sitter) and uses Gemini 2.5 Flash Lite to explain those windows in plain language — including care tips tailored to each pet's age group and energy level.
+PawPal+ is an extension of Pawpal () helped pet owners plan their day.  Pawpal+ takes over when their schedule can't cover everything their pets need. A deterministic scheduler places care tasks within the owner's available hours; when tasks can't all fit or end up too far apart, the system computes specific coverage windows (🦮 dog walker / 🏠 pet sitter) and uses Gemini 2.5 Flash Lite to explain those windows in plain language — including care tips tailored to each pet's age group and energy level.
 
 <!-- 📸 SCREENSHOT: Full UI after generating a schedule — show the schedule table, coverage section, and "Explain with AI" button. Save as assets/ui-overview.png -->
 ![PawPal+ schedule UI overview](assets/ui-overview.png)
@@ -11,7 +11,7 @@ PawPal+ helps pet owners plan their day when their schedule can't cover everythi
 
 ## 📋 Base Project
 
-**PawPal** (Modules 1–3) was a rule-based daily pet care planner built with Python and Streamlit. An owner describes their available hours and their pets' care tasks; the scheduler produces a time-blocked daily plan that respects task priority, dependency ordering (e.g., medication after feeding), and recurring-task spacing. It used no external AI — all scheduling decisions came from a deterministic greedy algorithm with composite urgency scoring.
+**PawPal** was a rule-based daily pet care planner built with Python and Streamlit. An owner describes their available hours and their pets' care tasks; the scheduler produces a time-blocked daily plan that respects task priority, dependency ordering (e.g., medication after feeding), and recurring-task spacing. It used no external AI — all scheduling decisions came from a deterministic greedy algorithm with composite urgency scoring.
 
 ---
 
@@ -222,7 +222,7 @@ The profile-aware tip names the age group, energy level, and a specific training
 
 ## 🧪 Testing
 
-**128 automated tests, all passing.**
+128 automated tests cover the scheduler, conflict detector, breed trie, and coverage engine. `eval_coverage.py` adds 19 PASS/FAIL integration checks across 6 realistic scenarios — including a control case where everything fits and no coverage is generated. Neither suite requires an API key. `summarize_coverage()` is exercised live via the Streamlit UI and programmed demo scenario.
 
 ```bash
 python -m pytest test_scheduler.py test_agent.py -v   # 128 tests
@@ -231,12 +231,60 @@ python -m pytest test_agent.py -v                     # 92 — conflict detector
 python eval_coverage.py                               # 19 predefined checks across 6 scenarios
 ```
 
-`eval_coverage.py` runs 19 PASS/FAIL checks across 6 scenarios (including a control case where everything fits and no coverage is needed). No API key required.
-
-`summarize_coverage()` requires a live API key and is exercised via the Streamlit UI and demo scenario 5.
-
 ---
 
 ## 📝 Reflection, Ethics, and AI Collaboration
 
-See [model_card.md](model_card.md) — covers AI collaboration examples, limitations, bias, misuse potential, and testing results.
+[model_card.md](model_card.md) covers how AI was used during development, where it helped and where it fell short, the system's known limitations and bias risks, misuse potential, and ideas for future improvement.
+
+---
+
+## 🧭 Dear Future Me: Ideas for Enhancements
+
+The philosophy that shaped v1: **keep correctness in deterministic rules; use AI where interpretation, personalization, or large-text knowledge adds value.** Every enhancement below is labeled by where the real work belongs.
+
+### 🐶 Puppy Curriculum & Training Support
+
+This is the most AI-appropriate expansion — puppy training knowledge is large, textual, and varies across sources. Rules can schedule the sessions; AI can explain and contextualize them.
+
+- **Integrate structured socialization routines** (Puppy Culture, Avidog, AKC STAR Puppy). *AI value: these curricula differ in structure and terminology; an LLM can unify and summarize them for the owner.*
+- **Use RAG to ground recommendations** against a curated corpus of training steps, exposure lists, and age-appropriate milestones. *Why RAG: prevents hallucinations, ensures consistency, and allows updates without code changes.*
+- **Track exposures progressively** (sounds, surfaces, handling exercises). *AI value: the LLM can generate “why this matters today” explanations and suggest next steps.*
+- **Add training-task categories** with frequency targets (short sessions, multiple times per day). *Hybrid: deterministic logic handles timing; AI provides behavioral insight and motivation.*
+
+**Why this is AI-worthy:** the knowledge is too nuanced and text-heavy to hardcode. RAG + LLM gives grounded, curriculum-aligned guidance without compromising safety.
+
+### 🤖 Agentic Task Integration
+
+This is where agentic AI shines — not for correctness, but for workflow automation, reflection, and personalized summaries.
+
+- **Push daily tasks into a reminder system automatically.** *Agentic value: the AI orchestrates reminders and tracks completions.*
+- **Track completions, skips, and delays.** *AI value: the LLM detects patterns and generates insights.*
+- **Generate weekly summaries** (“Here’s what went well; here’s what to adjust next week”). *AI value: natural-language synthesis of structured data.*
+- **Detect routine drift** (e.g., consistently late walks) and suggest refinements. *AI value: pattern recognition + narrative explanation.*
+
+**Why this is AI-worthy:** agentic workflows turn the schedule into a living routine. The rules produce the plan; the AI helps the owner live the plan.
+
+### 👥 Multi-Caretaker Scheduling
+
+This is almost entirely deterministic — a constraint-satisfaction problem — but AI can enhance the handoff experience.
+
+- **Multiple humans with different capability profiles** (child can walk but not medicate; dog walker only walks/grooms). *Deterministic: capabilities → constraints → assignment.*
+- **Caretaker availability windows and task assignment.** *Deterministic: classic scheduling logic.*
+- **”Owner-only” flags for sensitive tasks.** *Deterministic: hard constraints.*
+- **Fallback logic when windows are too narrow.** *Deterministic: reallocation rules.*
+- **Optional AI layer:** explain why tasks were assigned to specific caretakers; generate handoff summaries (“Here’s what the dog walker needs to know today”).
+
+**Why this stays mostly deterministic:** correctness matters more than creativity here. AI adds clarity, not logic.
+
+### 📅 Expanded Scheduling Horizons
+
+Rule-driven at its core, but AI can enrich the owner’s understanding of long-term patterns.
+
+- **Weekly and monthly scheduling modes.** *Deterministic: recurrence rules.*
+- **Less-than-daily routines** (reptile feeding every 2–3 days, weekly grooming, monthly nail trims). *Deterministic: interval logic.*
+- **Recurring appointments** (groomer, vet, daycare). *Deterministic: calendar logic.*
+- **Long-term medication cycles** (flea/tick/heartworm, vaccination boosters). *Deterministic: fixed intervals.*
+- **Optional AI layer:** “month at a glance” summaries; seasonal context (“Shedding season means more grooming tasks this month”).
+
+**Why this stays mostly deterministic:** these are predictable intervals. AI adds narrative, not scheduling logic.

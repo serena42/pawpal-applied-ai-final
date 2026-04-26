@@ -67,7 +67,7 @@ jordan.add_pet(mochi)
 jordan.add_pet(luna)
 
 print(f"\n👤  Owner: {jordan.name}")
-print(f"🕐  Availability: 7–9 am  |  12–1 pm  |  5–8 pm\n")
+print("🕐  Availability: 7–9 am  |  12–1 pm  |  5–8 pm\n")
 
 # ---------------------------------------------------------------------------
 # Show each pet's tasks sorted by urgency (demonstrates list_tasks())
@@ -146,7 +146,7 @@ save(owner_to_dict(jordan))
 print("💾  Configuration saved to pawpal_save.json.")
 
 reloaded = dict_to_owner(load())
-pet_list = ", ".join(
+PET_NAMES = ", ".join(
     f"{PET_EMOJI.get(p.pet_type, '')} {p.name}" for p in reloaded.pets
 )
-print(f"📂  Reloaded: {reloaded.name} — {pet_list}")
+print(f"📂  Reloaded: {reloaded.name} — {PET_NAMES}")

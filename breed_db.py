@@ -1,9 +1,16 @@
+"""Trie-backed breed lookup used for pet profile suggestions."""
+
 from __future__ import annotations
+
 import json
+from functools import lru_cache
 from pathlib import Path
 
 
+ # pylint: disable=too-few-public-methods
 class TrieNode:
+    """A single node in the breed prefix trie."""
+
     __slots__ = ("children", "breeds")
 
     def __init__(self) -> None:
@@ -11,11 +18,15 @@ class TrieNode:
         self.breeds: list[dict] = []
 
 
+ # pylint: disable=too-few-public-methods
 class BreedTrie:
+    """Prefix trie for fast breed-name lookup."""
+
     def __init__(self) -> None:
         self.root = TrieNode()
 
     def insert(self, breed: dict) -> None:
+        """Insert a breed record into the trie."""
         node = self.root
         for ch in breed["name"].lower():
             if ch not in node.children:
@@ -24,6 +35,7 @@ class BreedTrie:
         node.breeds.append(breed)
 
     def search(self, prefix: str, max_results: int = 8) -> list[dict]:
+        """Return breeds whose names match the provided prefix."""
         node = self.root
         for ch in prefix.lower():
             if ch not in node.children:
@@ -34,6 +46,7 @@ class BreedTrie:
         return results
 
     def _collect(self, node: TrieNode, results: list[dict], limit: int) -> None:
+        """Depth-first traversal that collects matching breeds up to limit."""
         results.extend(node.breeds)
         for child in node.children.values():
             if len(results) >= limit:
@@ -41,14 +54,11 @@ class BreedTrie:
             self._collect(child, results, limit)
 
 
-_trie: BreedTrie | None = None
-
-
+@lru_cache(maxsize=1)
 def get_trie() -> BreedTrie:
-    global _trie
-    if _trie is None:
-        path = Path(__file__).parent / "breeds.json"
-        _trie = BreedTrie()
-        for breed in json.loads(path.read_text(encoding="utf-8")):
-            _trie.insert(breed)
-    return _trie
+    """Load the shared breed trie from the bundled JSON dataset."""
+    path = Path(__file__).parent / "breeds.json"
+    trie = BreedTrie()
+    for breed in json.loads(path.read_text(encoding="utf-8")):
+        trie.insert(breed)
+    return trie

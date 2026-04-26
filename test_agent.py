@@ -6,17 +6,20 @@ Run:
     pytest test_agent.py -v
 """
 
-import pytest
+# pylint: disable=missing-class-docstring,missing-function-docstring,too-few-public-methods
+# pylint: disable=redefined-outer-name,unused-argument,import-outside-toplevel,line-too-long
+
 from datetime import time
+import pytest
 
 from models import (
     Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, _to_time, _mins,
     ENERGY_DURATION_MULT, ENERGY_FREQUENCY_MULT,
     AGE_DURATION_MULT, AGE_FREQUENCY_MULT, AGE_FEEDING_FREQUENCY_MULT,
-    ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP,
+    ACTIVITY_TASKS, POST_FEEDING_GAP, PET_TASK_DEFAULTS,
     _MIN_MED_FEEDING_GAP, _MIN_CARE_TASK_GAP,
 )
-from conflict_detector import detect_conflicts, Conflict, suggest_coverage_windows
+from conflict_detector import detect_conflicts, suggest_coverage_windows
 from breed_db import BreedTrie, get_trie
 
 
@@ -36,7 +39,7 @@ def make_st(task_type, name, start_mins, duration_mins):
     return ScheduledTask(task, _to_time(start_mins), _to_time(start_mins + duration_mins), "test")
 
 
-def single_pet_plans(owner_name="Tester", pet_name="Buddy", sts=None):
+def single_pet_plans(pet_name="Buddy", sts=None):
     plan = DailyPlan()
     if sts:
         plan.scheduled.extend(sts)
@@ -53,7 +56,7 @@ class TestNoConflicts:
         st1 = make_st(TaskType.WALK, "Morning Walk", 480, 30)      # 8:00–8:30
         st2 = make_st(TaskType.FEEDING, "Feeding", 510, 15)         # 8:30–8:45
         plans = single_pet_plans(sts=[st1, st2])
-        assert detect_conflicts(plans, owner, []) == []
+        assert not detect_conflicts(plans, owner, [])
 
 
 class TestOverlapDetection:
@@ -455,7 +458,7 @@ class TestEnergyFrequencyApplication:
         assert freq_vh_senior < freq_vh_adult
 
     def test_feeding_frequency_unaffected_by_energy(self):
-        dur, freq = _apply(15, 2, TaskType.FEEDING, "very_high", "adult")
+        _, freq = _apply(15, 2, TaskType.FEEDING, "very_high", "adult")
         assert freq == 2  # non-activity task — unchanged
 
     def test_frequency_never_below_one(self):
@@ -700,7 +703,7 @@ class TestSuggestCoverageWindows:
         plans = {"Buddy": plan}
         owner.add_pet(dog)
         suggestions = suggest_coverage_windows(plans, owner, [dog])
-        assert suggestions == []
+        assert not suggestions
 
     def test_coverage_windows_have_required_fields(self):
         owner = _make_split_owner()
@@ -734,8 +737,7 @@ class TestSuggestCoverageWindows:
 class TestPetTaskDefaults:
     """Verify the task-default callback logic — mirrors _reset_tasks_for_type in app.py."""
     def _defaults_for(self, pet_type: str):
-        from models import PET_TASK_DEFAULTS, TaskType
-        return [tt for tt in PET_TASK_DEFAULTS.get(pet_type, [TaskType.FEEDING])]
+        return list(PET_TASK_DEFAULTS.get(pet_type, [TaskType.FEEDING]))
 
     def test_fish_has_no_walk(self):
         assert TaskType.WALK not in self._defaults_for("fish")

@@ -1,5 +1,11 @@
-import pytest
+"""Scheduler and model integration tests for PawPal+."""
+
+# pylint: disable=missing-module-docstring,missing-function-docstring,missing-class-docstring
+# pylint: disable=redefined-outer-name,wrong-import-order,too-few-public-methods,protected-access,line-too-long
+
 from datetime import time
+
+import pytest
 from models import (
     Task, TaskType, AvailabilityWindow, Owner, Pet, Scheduler, DailyPlan,
     _mins,

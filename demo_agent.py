@@ -29,11 +29,13 @@ Run:
 import os
 from datetime import time
 
+from agent import ScheduleAgent
 from models import Owner, Pet, Task, TaskType, Scheduler, _mins
 from conflict_detector import detect_conflicts, suggest_coverage_windows
 
 
 def clear():
+    """Clear the terminal screen between demo scenarios."""
     os.system("cls" if os.name == "nt" else "clear")
 
 
@@ -42,6 +44,7 @@ SUBDIV  = "-" * 62
 
 
 def format_schedule(plans: dict) -> str:
+    """Render scheduled tasks and warnings as a plain-text block."""
     rows = sorted(
         [(pet, st) for pet, plan in plans.items() for st in plan.scheduled],
         key=lambda x: _mins(x[1].start_time),
@@ -62,7 +65,10 @@ def format_schedule(plans: dict) -> str:
 
 
 def run_scenario(title: str, description: str, owner: Owner) -> None:
-    """Run the real scheduler, detect conflicts, and suggest coverage windows (no API key needed)."""
+    """Run the real scheduler, detect conflicts, and suggest coverage windows.
+
+    This path does not require an API key.
+    """
     print(DIVIDER)
     print(f"  {title}")
     print(SUBDIV)
@@ -134,7 +140,6 @@ def run_ai_scenario(title: str, description: str, owner: Owner) -> None:
     print("  Asking Gemini to synthesize a recommendation...")
     print(SUBDIV)
     try:
-        from agent import ScheduleAgent
         summary = ScheduleAgent().summarize_coverage(
             plans, conflicts, coverage, owner, owner.pets
         )
@@ -146,8 +151,8 @@ def run_ai_scenario(title: str, description: str, owner: Owner) -> None:
             "\n  Windows: set GEMINI_API_KEY=your-key"
             "\n  Mac/Linux: export GEMINI_API_KEY=your-key"
         )
-    except Exception as e:
-        print(f"\n  [Gemini error: {e}]")
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        print(f"\n  [Gemini error: {exc}]")
 
     print()
 
@@ -183,7 +188,7 @@ def scenario_2() -> Owner:
     """
     Jordan is only available 07:00-08:00 and 20:00-21:00.
     Both of Buddy's daily feedings are scheduled (one per window) but they
-    sit 12+ hours apart — 4 hours beyond the 8-hour recommended maximum.
+    sit 12+ hours apart - 4 hours beyond the 8-hour recommended maximum.
     No schedule adjustment can close this gap without a third window.
     Coverage: pet sitter midday (around 13:15-14:00) to add a midday feeding.
     """
@@ -278,8 +283,14 @@ SCENARIOS = [
         run_scenario,
     ),
     (
-        "AI synthesis -- Gemini explains Taylor's coverage needs  [requires GEMINI_API_KEY]",
-        "Two-pet scenario; Gemini synthesizes which coverage windows can be combined into one visit.",
+        (
+            "AI synthesis -- Gemini explains Taylor's coverage needs "
+            "[requires GEMINI_API_KEY]"
+        ),
+        (
+            "Two-pet scenario; Gemini synthesizes which coverage windows "
+            "can be combined into one visit."
+        ),
         scenario_3,
         run_ai_scenario,
     ),
@@ -287,6 +298,7 @@ SCENARIOS = [
 
 
 def show_menu() -> None:
+    """Print the interactive scenario selection menu."""
     clear()
     print(DIVIDER)
     print("  PAWPAL+ -- SELECT A SCENARIO")
@@ -301,6 +313,7 @@ def show_menu() -> None:
 
 
 def main() -> None:
+    """Run the interactive demo loop."""
     while True:
         show_menu()
         choice = input(f"  Select (1-{len(SCENARIOS)} or Q): ").strip().lower()

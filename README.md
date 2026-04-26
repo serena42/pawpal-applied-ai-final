@@ -85,6 +85,7 @@ PawPal+ extends the original with three substantial AI features:
 | `persistence.py` | JSON save / load |
 | `test_scheduler.py` | 36 unit tests for Scheduler |
 | `test_agent.py` | 103 unit tests for conflict detector + agent parsing + breed trie |
+| `eval_coverage.py` | Evaluation script — 19 predefined checks across 6 scenarios, prints PASS/FAIL |
 
 ---
 

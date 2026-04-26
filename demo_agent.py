@@ -60,7 +60,7 @@ def format_schedule(plans: dict) -> str:
 
 
 def run_scenario(title: str, description: str, owner: Owner) -> None:
-    """Run the real scheduler, detect conflicts, and suggest coverage windows."""
+    """Run the real scheduler, detect conflicts, and suggest coverage windows (no API key needed)."""
     print(DIVIDER)
     print(f"  {title}")
     print(SUBDIV)
@@ -90,6 +90,62 @@ def run_scenario(title: str, description: str, owner: Owner) -> None:
             print(f"     {cw.reason}")
     else:
         print("\n  No additional coverage needed.")
+
+    print()
+
+
+def run_ai_scenario(title: str, description: str, owner: Owner) -> None:
+    """
+    Same pipeline as run_scenario, but also calls Gemini to synthesize the
+    coverage windows into a plain-language recommendation. Requires GEMINI_API_KEY.
+    """
+    print(DIVIDER)
+    print(f"  {title}")
+    print(SUBDIV)
+    print(f"  {description}")
+    print(DIVIDER)
+
+    scheduler = Scheduler(owner, owner.pets[0])
+    plans = scheduler.generate_all_plans()
+
+    print("\nSchedule (within owner's available hours):")
+    print(format_schedule(plans))
+
+    conflicts = detect_conflicts(plans, owner, owner.pets)
+    coverage = suggest_coverage_windows(plans, owner, owner.pets)
+
+    if conflicts:
+        print(f"\nConflicts / gaps detected ({len(conflicts)}):")
+        for c in conflicts:
+            print(f"  [{c.conflict_type.upper()}] {c.reason}")
+    else:
+        print("\n  No conflicts detected.")
+
+    if coverage:
+        print(f"\nCoverage windows computed ({len(coverage)}):")
+        for cw in coverage:
+            svc = cw.service_type.replace("_", " ").title()
+            print(f"  -> {svc} for {cw.pet_name}: {cw.start}-{cw.end}")
+            print(f"     {cw.reason}")
+
+    print()
+    print("  Asking Gemini to synthesize a recommendation...")
+    print(SUBDIV)
+    try:
+        from agent import ScheduleAgent
+        summary = ScheduleAgent().summarize_coverage(
+            plans, conflicts, coverage, owner, owner.pets
+        )
+        print()
+        print(summary)
+    except KeyError:
+        print(
+            "\n  [GEMINI_API_KEY not set]"
+            "\n  Windows: set GEMINI_API_KEY=your-key"
+            "\n  Mac/Linux: export GEMINI_API_KEY=your-key"
+        )
+    except Exception as e:
+        print(f"\n  [Gemini error: {e}]")
 
     print()
 
@@ -199,21 +255,31 @@ SCENARIOS = [
         "Commuter's dog -- missed walk & feeding gap",
         "Morgan: 07:00-09:00 and 18:00-19:30. Rex needs 3 walks; only 2 fit.",
         scenario_1,
+        run_scenario,
     ),
     (
         "Tight-gap feeding -- feedings 12 h apart",
         "Jordan: 07:00-08:00 and 20:00-21:00. Buddy's feedings exceed the 8 h limit.",
         scenario_2,
+        run_scenario,
     ),
     (
         "Two-pet household -- shared slots, cascading gaps",
         "Taylor: same narrow windows. Dog + cat compete; both end up with 10 h gaps.",
         scenario_3,
+        run_scenario,
     ),
     (
         "Puppy's high demands -- multiple dropped tasks",
         "Riley: 2 windows, puppy Luna needs 4 walks + 3 feedings; 4th walk + 3rd feeding dropped.",
         scenario_4,
+        run_scenario,
+    ),
+    (
+        "AI synthesis -- Gemini explains Taylor's coverage needs  [requires GEMINI_API_KEY]",
+        "Two-pet scenario; Gemini synthesizes which coverage windows can be combined into one visit.",
+        scenario_3,
+        run_ai_scenario,
     ),
 ]
 
@@ -224,7 +290,7 @@ def show_menu() -> None:
     print("  PAWPAL+ -- SELECT A SCENARIO")
     print(DIVIDER)
     print()
-    for i, (title, description, _) in enumerate(SCENARIOS, 1):
+    for i, (title, description, _setup, _runner) in enumerate(SCENARIOS, 1):
         print(f"  {i}. {title}")
         print(f"     {description}")
         print()
@@ -235,16 +301,16 @@ def show_menu() -> None:
 def main() -> None:
     while True:
         show_menu()
-        choice = input("  Select (1-4 or Q): ").strip().lower()
+        choice = input(f"  Select (1-{len(SCENARIOS)} or Q): ").strip().lower()
         if choice == "q":
             clear()
             break
         if choice.isdigit() and 1 <= int(choice) <= len(SCENARIOS):
             idx = int(choice) - 1
-            title, description, setup_fn = SCENARIOS[idx]
+            title, description, setup_fn, runner_fn = SCENARIOS[idx]
             owner = setup_fn()
             clear()
-            run_scenario(f"SCENARIO {idx + 1} -- {title}", description, owner)
+            runner_fn(f"SCENARIO {idx + 1} -- {title}", description, owner)
             input("\n  Press Enter to return to menu...")
 
 

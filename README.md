@@ -81,7 +81,7 @@ PawPal+ extends the original with three substantial AI features:
 | `breed_db.py` | Trie-based breed lookup + multipliers |
 | `app.py` | Streamlit UI |
 | `main.py` | CLI demo (no API key needed) |
-| `demo_agent.py` | 3-scenario agent demo (requires API key) |
+| `demo_agent.py` | 4-scenario scheduling pipeline demo (no API key needed) |
 | `persistence.py` | JSON save / load |
 | `test_scheduler.py` | 36 unit tests for Scheduler |
 | `test_agent.py` | 103 unit tests for conflict detector + agent parsing + breed trie |
@@ -119,11 +119,11 @@ Creates owner Jordan with two pets (Mochi the dog, Luna the cat), schedules thei
 streamlit run app.py
 ```
 
-**Run the agentic demo** (requires `GEMINI_API_KEY`):
+**Run the scheduling pipeline demo** (no API key required):
 ```bash
 python demo_agent.py
 ```
-Runs three pre-built conflict scenarios through the full detect → repair → verify loop.
+Interactive menu — pick any of four realistic scenarios. Each one runs the deterministic scheduler within the owner's actual availability windows, detects what couldn't fit or ended up too far apart, and computes specific coverage windows (dog walker, pet sitter) that would close each gap. No hand-crafted conflicts: every plan is what the scheduler actually produces.
 
 **Run all tests:**
 ```bash
@@ -134,9 +134,42 @@ python -m pytest test_scheduler.py test_agent.py -v
 
 ## Sample Interactions
 
-### Example 1 — Simple overlap, resolved in one iteration
+The examples below show the two main interaction paths: the **scheduling pipeline demo** (CLI, no API key) and the **AI repair loop** (Streamlit UI, requires `GEMINI_API_KEY`).
 
-**Setup:** Alex's dog Buddy has a 30-min morning walk (08:00–08:30) and a 15-min feeding accidentally placed at 08:20, overlapping by 10 minutes.
+### Example 1 — Commuter's dog: scheduler drops 3rd walk, coverage computed (CLI demo)
+
+**Setup:** Morgan is available 07:00–09:00 and 18:00–19:30. Rex needs 3 walks/day, but the adult 3-hour minimum between sessions means only 2 fit. The two feedings also end up 10 h 45 m apart, exceeding the 8-hour safe limit.
+
+**Scheduler output:**
+```
+07:00-07:30: Walk (Rex)
+07:30-07:45: Feeding (Rex)
+18:00-18:30: Walk (Rex)
+18:30-18:45: Feeding (Rex)
+[WARN] 'Walk': only 2 of 3 occurrences scheduled - not enough availability windows.
+[WARN] 'Feeding' gap of 10h 45m between occurrences 1 and 2
+```
+
+**Conflict detected:**
+```
+[GAP] Feeding for Rex: gap of 10h 45m between occurrences exceeds max 8h
+```
+
+**Coverage window suggestions:**
+```
+-> Pet Sitter for Rex: 12:45-13:30
+   Feeding for Rex has a 10h 45m gap. A pet sitter visiting from 12:45 to 13:30 would close it.
+-> Dog Walker for Rex: 13:05-13:55
+   A midday walk for Rex isn't covered during your unavailability (09:00-18:00).
+-> Pet Sitter for Rex: 09:15-11:15
+   Some tasks couldn't fit in your available hours. Adding a pet sitter from 09:15 to 11:15 would create room for them.
+```
+
+---
+
+### Example 2 — Simple overlap, AI repair (Streamlit UI — requires GEMINI_API_KEY)
+
+**Setup:** Alex's dog Buddy has a 30-min morning walk (08:00–08:30) and a 15-min feeding accidentally placed at 08:20, overlapping by 10 minutes. (Simulates a user dragging a task to an overlapping slot in the app.)
 
 **Conflict detected:**
 ```
@@ -158,7 +191,7 @@ All conflicts resolved in 1 iteration.
 
 ---
 
-### Example 2 — Multi-pet cascade, resolved in two iterations
+### Example 3 — Multi-pet cascade, AI repair (Streamlit UI — requires GEMINI_API_KEY)
 
 **Setup:** Jordan has Mochi (dog) and Luna (cat). Mochi has a walk/feeding overlap; Luna has a feeding/litter-box overlap.
 
@@ -177,7 +210,7 @@ All conflicts resolved in 2 iterations.
 
 ---
 
-### Example 3 — Dependency violation (medication before feeding)
+### Example 4 — Dependency violation, AI repair (Streamlit UI — requires GEMINI_API_KEY)
 
 **Setup:** Sam's dog Max needs medication after eating. The schedule has Medication at 08:00, but Feeding isn't until 09:00 — violating the declared dependency.
 
@@ -234,7 +267,7 @@ python -m pytest test_scheduler.py -v                 # 36 — Scheduler behavio
 python -m pytest test_agent.py -v                     # 103 — conflict detector, agent, breed trie
 ```
 
-The agent's live API loop is verified manually via `python demo_agent.py` (3 scenarios, no mocking).
+The AI repair loop (`ScheduleAgent.fix_schedule()`) requires a live API key and is exercised manually via the Streamlit UI. `demo_agent.py` provides end-to-end verification of the scheduling pipeline and coverage-window engine across 4 realistic scenarios (no mocking, no API key needed).
 
 ---
 

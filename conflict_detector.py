@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from models import _mins, _to_time, _GAP_THRESHOLDS, _MIN_ACTIVITY_GAP, ACTIVITY_TASKS, VIGOROUS_TASKS, POST_FEEDING_GAP, TaskType, _MIN_MED_FEEDING_GAP
 
@@ -398,27 +399,76 @@ def suggest_coverage_windows(plans: dict, owner, pets) -> list[CoverageWindow]:
                 ),
             ))
 
-        # 3. Dropped tasks — find an unavailability block that could cover them.
-        dropped_warnings = [w for w in plan.warnings if "not enough availability windows" in w]
-        if dropped_warnings and unavail_blocks:
-            block_start, block_end = max(unavail_blocks, key=lambda b: b[1] - b[0])
-            gap_dur = block_end - block_start
-            if gap_dur >= 30:
-                cstart = block_start + 15
-                cend   = min(block_end - 15, cstart + min(120, gap_dur - 30))
+        # 3. Dropped tasks — one specific coverage window per dropped occurrence.
+        #    Parse each "only M of N occurrences scheduled" warning, find the scheduled
+        #    occurrences of that task, locate the largest gap between them, and place
+        #    the suggested coverage slot at the midpoint of that gap.
+        _drop_pat = re.compile(r"'([^']+)': only (\d+) of (\d+) occurrences scheduled")
+        for warn in plan.warnings:
+            match = _drop_pat.search(warn)
+            if match is None:
+                continue
+            task_name_w = match.group(1)
+            scheduled_n = int(match.group(2))
+            needed_n    = int(match.group(3))
+            dropped_n   = needed_n - scheduled_n
+            if dropped_n <= 0:
+                continue
+
+            matched_occs = [st for st in plan.scheduled if st.task.name == task_name_w]
+            if not matched_occs:
+                continue  # dropped completely — no anchors to place the window against
+
+            task_type_d = matched_occs[0].task.task_type
+            task_dur_d  = matched_occs[0].task.duration_minutes
+            is_walk_d   = task_type_d == TaskType.WALK
+            service_d   = "dog_walker" if is_walk_d else "pet_sitter"
+
+            occs_sorted = sorted(matched_occs, key=lambda s: _mins(s.start_time))
+            day_s = _mins(owner_windows[0].start) if owner_windows else 0
+            day_e = _mins(owner_windows[-1].end)  if owner_windows else 1440
+
+            # Gaps: before first occurrence, between pairs, after last.
+            gap_list: list[tuple[int, int]] = []
+            prev = day_s
+            for occ in occs_sorted:
+                gap_list.append((prev, _mins(occ.start_time)))
+                prev = _mins(occ.end_time)
+            gap_list.append((prev, day_e))
+
+            for _ in range(dropped_n):
+                if not gap_list:
+                    break
+                g_start, g_end = max(gap_list, key=lambda g: g[1] - g[0])
+                if g_end - g_start < task_dur_d + 30:
+                    break
+
+                ideal_start = max(g_start + 15, (g_start + g_end) // 2 - task_dur_d // 2)
+                ideal_end   = min(g_end - 15, ideal_start + task_dur_d + 30)
+                if ideal_end <= ideal_start:
+                    break
+
                 _add(CoverageWindow(
-                    service_type="pet_sitter",
+                    service_type=service_d,
                     pet_name=pet_name,
-                    start=_to_time(cstart).strftime("%H:%M"),
-                    end=_to_time(cend).strftime("%H:%M"),
-                    tasks=[],
+                    start=_to_time(ideal_start).strftime("%H:%M"),
+                    end=_to_time(ideal_end).strftime("%H:%M"),
+                    tasks=[task_name_w],
                     reason=(
-                        f"Some tasks for {pet_name} couldn't fit in your available hours. "
-                        f"Adding owner time or a pet sitter from "
-                        f"{_to_time(cstart).strftime('%H:%M')} to "
-                        f"{_to_time(cend).strftime('%H:%M')} would create room for them."
+                        f"{task_name_w} for {pet_name}: {dropped_n} of {needed_n} daily "
+                        f"occurrence(s) couldn't fit in the available windows. "
+                        f"A {'dog walker' if is_walk_d else 'pet sitter'} from "
+                        f"{_to_time(ideal_start).strftime('%H:%M')} to "
+                        f"{_to_time(ideal_end).strftime('%H:%M')} covers the missing occurrence."
                     ),
                 ))
+
+                # Split the used gap around the new slot for subsequent iterations.
+                gap_list.remove((g_start, g_end))
+                if ideal_start - 10 > g_start:
+                    gap_list.append((g_start, ideal_start - 10))
+                if g_end > ideal_end + 10:
+                    gap_list.append((ideal_end + 10, g_end))
 
     return suggestions
 

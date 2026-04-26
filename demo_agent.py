@@ -1,32 +1,39 @@
 """
-PawPal+ Agentic Demo — 6 Scenarios
-====================================
-Demonstrates the conflict-detection → AI repair loop and edge-case
-guardrails across six scenarios of increasing complexity.
+PawPal+ Demo — Scheduling Pipeline & Coverage Suggestions
+==========================================================
+Shows the full pipeline across four realistic scenarios.
+
+The deterministic scheduler places tasks within the owner's availability
+windows. When it can't fit everything — too many occurrences, windows too
+narrow, or recurring tasks ending up too far apart — the conflict detector
+flags each issue and the coverage-window engine computes the minimum
+external-help slots that would close each gap.
 
 Scenarios
 ---------
-1. Simple overlap          — walk and feeding overlap; resolved in one pass
-2. Multi-pet cascade       — two pets, two separate overlaps; one fix per iteration
-3. Dependency violation    — medication scheduled before its feeding dependency
-4. Post-feeding gap        — vigorous activity too soon after eating (gastric torsion risk)
-5. Medication-feeding gap  — medication given before food has settled (absorption rule)
-6. Unresolvable gap        — midday gap the owner can't cover; system suggests a pet sitter
+1. Commuter's dog       — 2 narrow windows; 3rd walk dropped; multiple
+                          coverage suggestions (dog walker + pet sitter)
+2. Tight-gap feeding    — both feedings scheduled but 12 h apart, 4 h over
+                          the 8-hour safe limit; pet sitter midday suggested
+3. Two-pet household    — shared busy slots cause cascading gaps for dog and
+                          cat; separate coverage windows computed for each
+4. Puppy's high demands — Luna needs 4 walks + 3 feedings; only 3 walks and
+                          2 feedings fit in two narrow windows
 
 Run:
     python demo_agent.py
 """
 
+import os
 from datetime import time
 
-from models import Owner, Pet, Task, TaskType, DailyPlan, ScheduledTask, _to_time, _mins
-from conflict_detector import detect_conflicts, recommend_service, suggest_coverage_windows
-from agent import ScheduleAgent
+from models import Owner, Pet, Task, TaskType, Scheduler, _mins
+from conflict_detector import detect_conflicts, suggest_coverage_windows
 
 
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
+def clear():
+    os.system("cls" if os.name == "nt" else "clear")
+
 
 DIVIDER = "=" * 62
 SUBDIV  = "-" * 62
@@ -37,91 +44,42 @@ def format_schedule(plans: dict) -> str:
         [(pet, st) for pet, plan in plans.items() for st in plan.scheduled],
         key=lambda x: _mins(x[1].start_time),
     )
+    lines = []
     if not rows:
-        return "  (no tasks scheduled)"
-    return "\n".join(
-        f"  {st.start_time.strftime('%H:%M')}–{st.end_time.strftime('%H:%M')}: "
-        f"{st.task.name} ({pet})"
-        for pet, st in rows
-    )
-
-
-def run_scenario(title: str, description: str, plans: dict, owner: Owner) -> None:
-    """Run the full detect → AI repair → verify loop and print results."""
-    print(DIVIDER)
-    print(f"  {title}")
-    print(SUBDIV)
-    print(f"  {description}")
-    print(DIVIDER)
-
-    print("\nInitial schedule:")
-    print(format_schedule(plans))
-
-    conflicts = detect_conflicts(plans, owner, owner.pets)
-
-    if not conflicts:
-        print("\nNo conflicts detected — schedule is already valid.\n")
-        return
-
-    print(f"\nConflicts detected ({len(conflicts)}):")
-    for c in conflicts:
-        print(f"  [{c.conflict_type.upper()}] {c.reason}")
-
-    print("\nAgent repair loop:")
-    agent = ScheduleAgent()
-    plans, history, coverage = agent.fix_schedule(plans, owner, owner.pets)
-
-    for step in history:
-        print(f"  Iteration {step['iteration'] + 1}: "
-              f"{step['conflicts_found']} conflict(s) found")
-        print(f"    AI suggests: {step['claude_suggestion']}")
-
-    remaining = detect_conflicts(plans, owner, owner.pets)
-    print(f"\nFinal schedule:")
-    print(format_schedule(plans))
-
-    if remaining:
-        print(f"\n  WARNING: {len(remaining)} conflict(s) unresolved after "
-              f"{len(history)} iteration(s).")
-        for c in remaining:
-            print(f"    [{c.conflict_type.upper()}] {c.reason}")
-        rec = recommend_service(remaining)
-        if rec:
-            print(f"\n  Recommendation: {rec.replace('**', '')}")
+        lines.append("  (no tasks scheduled)")
     else:
-        print(f"\n  All conflicts resolved in {len(history)} iteration(s).")
+        for pet, st in rows:
+            lines.append(
+                f"  {st.start_time.strftime('%H:%M')}-{st.end_time.strftime('%H:%M')}: "
+                f"{st.task.name} ({pet})"
+            )
+    for _pet_name, plan in plans.items():
+        for w in plan.warnings:
+            lines.append(f"  [WARN] {w}")
+    return "\n".join(lines)
 
-    if coverage:
-        print(f"\n  Coverage window suggestions ({len(coverage)}):")
-        for cw in coverage:
-            svc = cw.service_type.replace("_", " ").title()
-            print(f"    ->{svc} for {cw.pet_name}: {cw.start}–{cw.end}")
-            print(f"      {cw.reason}")
 
-    print()
-
-
-def run_coverage_scenario(title: str, description: str, plans: dict, owner: Owner) -> None:
-    """
-    Runner for scenarios where the conflict cannot be fixed within the owner's
-    hours. Skips the AI repair loop and goes straight to coverage suggestions.
-    """
+def run_scenario(title: str, description: str, owner: Owner) -> None:
+    """Run the real scheduler, detect conflicts, and suggest coverage windows."""
     print(DIVIDER)
     print(f"  {title}")
     print(SUBDIV)
     print(f"  {description}")
     print(DIVIDER)
 
-    print("\nSchedule:")
+    scheduler = Scheduler(owner, owner.pets[0])
+    plans = scheduler.generate_all_plans()
+
+    print("\nSchedule (within owner's available hours):")
     print(format_schedule(plans))
 
     conflicts = detect_conflicts(plans, owner, owner.pets)
-    print(f"\nConflicts detected ({len(conflicts)}):")
-    for c in conflicts:
-        print(f"  [{c.conflict_type.upper()}] {c.reason}")
-
-    print("\n  These conflicts cannot be resolved within the owner's available hours.")
-    print("  Skipping AI repair — computing coverage window suggestions instead.")
+    if conflicts:
+        print(f"\nConflicts / gaps detected ({len(conflicts)}):")
+        for c in conflicts:
+            print(f"  [{c.conflict_type.upper()}] {c.reason}")
+    else:
+        print("\n  No conflicts detected.")
 
     coverage = suggest_coverage_windows(plans, owner, owner.pets)
     if coverage:
@@ -129,233 +87,165 @@ def run_coverage_scenario(title: str, description: str, plans: dict, owner: Owne
         for cw in coverage:
             svc = cw.service_type.replace("_", " ").title()
             print(f"  -> {svc} for {cw.pet_name}: {cw.start}-{cw.end}")
-            print(f"    {cw.reason}")
+            print(f"     {cw.reason}")
     else:
-        print("\n  No coverage suggestions generated.")
+        print("\n  No additional coverage needed.")
 
     print()
 
 
 # ---------------------------------------------------------------------------
-# Scenario 1 — Simple single-pet overlap
+# Scenario 1 — Commuter's dog
 # ---------------------------------------------------------------------------
 
-def scenario_1() -> tuple:
+def scenario_1() -> Owner:
     """
-    Alex has one dog, Buddy. Walk runs 08:00–08:30 but Feeding
-    was accidentally scheduled at 08:20, overlapping the walk by 10 minutes.
-    One conflict, resolved in one iteration.
+    Morgan works 09:00-18:00 and is home only 07:00-09:00 and 18:00-19:30.
+    Rex needs 3 walks/day, but the adult min-gap rule (3 h between sessions)
+    means only 2 walks fit. The scheduler drops the 3rd walk and the two
+    feedings end up 10+ hours apart, exceeding the 8-hour safe limit.
+    Coverage: midday dog walker to cover the missing walk + pet sitter to
+    add a midday feeding within the gap.
     """
-    owner = Owner(name="Alex")
-    owner.add_window(time(8, 0), time(18, 0))
-    buddy = Pet(name="Buddy", pet_type="dog")
-    owner.add_pet(buddy)
-
-    walk    = Task(TaskType.WALK,    name="Morning Walk", duration_minutes=30, frequency=1)
-    feeding = Task(TaskType.FEEDING, name="Feeding",      duration_minutes=15, frequency=1)
-
-    plan = DailyPlan()
-    plan.scheduled.append(ScheduledTask(walk,    _to_time(480), _to_time(510), "scheduled"))
-    plan.scheduled.append(ScheduledTask(feeding, _to_time(500), _to_time(515), "scheduled"))
-
-    return {"Buddy": plan}, owner
+    owner = Owner(name="Morgan")
+    owner.add_window(time(7, 0), time(9, 0))
+    owner.add_window(time(18, 0), time(19, 30))
+    rex = Pet(name="Rex", pet_type="dog", age_group="adult", energy_level="high")
+    rex.add_task(Task(TaskType.WALK,    duration_minutes=30, frequency=3))
+    rex.add_task(Task(TaskType.FEEDING, duration_minutes=15, frequency=2))
+    owner.add_pet(rex)
+    return owner
 
 
 # ---------------------------------------------------------------------------
-# Scenario 2 — Multi-pet, multi-conflict cascade
+# Scenario 2 — Tight-gap feeding
 # ---------------------------------------------------------------------------
 
-def scenario_2() -> tuple:
+def scenario_2() -> Owner:
     """
-    Jordan has Mochi (dog) and Luna (cat). Two separate overlaps exist —
-    one for each pet — and the agent resolves them one per iteration.
+    Jordan is only available 07:00-08:00 and 20:00-21:00.
+    Both of Buddy's daily feedings are scheduled (one per window) but they
+    sit 12+ hours apart — 4 hours beyond the 8-hour recommended maximum.
+    No schedule adjustment can close this gap without a third window.
+    Coverage: pet sitter midday (around 13:15-14:00) to add a midday feeding.
     """
     owner = Owner(name="Jordan")
-    owner.add_window(time(8, 0), time(18, 0))
-    mochi = Pet(name="Mochi", pet_type="dog")
-    luna  = Pet(name="Luna",  pet_type="cat")
-    owner.add_pet(mochi)
-    owner.add_pet(luna)
-
-    walk     = Task(TaskType.WALK,      name="Morning Walk", duration_minutes=30, frequency=1)
-    feeding  = Task(TaskType.FEEDING,   name="Feeding",      duration_minutes=15, frequency=1)
-    feeding2 = Task(TaskType.FEEDING,   name="Feeding",      duration_minutes=15, frequency=1)
-    litter   = Task(TaskType.LITTER_BOX, name="Litter box",  duration_minutes=10, frequency=1)
-
-    mochi_plan = DailyPlan()
-    mochi_plan.scheduled.append(ScheduledTask(walk,    _to_time(480), _to_time(510), "scheduled"))
-    mochi_plan.scheduled.append(ScheduledTask(feeding, _to_time(500), _to_time(515), "scheduled"))
-
-    luna_plan = DailyPlan()
-    luna_plan.scheduled.append(ScheduledTask(feeding2, _to_time(600), _to_time(615), "scheduled"))
-    luna_plan.scheduled.append(ScheduledTask(litter,   _to_time(610), _to_time(620), "scheduled"))
-
-    return {"Mochi": mochi_plan, "Luna": luna_plan}, owner
+    owner.add_window(time(7, 0), time(8, 0))
+    owner.add_window(time(20, 0), time(21, 0))
+    buddy = Pet(name="Buddy", pet_type="dog")
+    buddy.add_task(Task(TaskType.FEEDING, duration_minutes=15, frequency=2))
+    owner.add_pet(buddy)
+    return owner
 
 
 # ---------------------------------------------------------------------------
-# Scenario 3 — Dependency violation (medication must follow feeding)
+# Scenario 3 — Two-pet household
 # ---------------------------------------------------------------------------
 
-def scenario_3() -> tuple:
+def scenario_3() -> Owner:
     """
-    Sam's dog Max needs medication after eating — Medication depends on Feeding.
-    The schedule has Medication at 08:00 but Feeding isn't until 09:00.
-    The correct fix is to move Medication to after Feeding ends, not to move
-    Feeding earlier — the prompt explicitly constrains this.
+    Taylor has 07:00-09:00 and 17:30-19:00. Buddy (dog) and Miso (cat)
+    share those time slots. Busy slots from Buddy's tasks leave Miso's tasks
+    crowded into the tail end of each window. All tasks are scheduled, but
+    every recurring task — Buddy's feedings, Miso's feedings, Miso's litter
+    box — ends up with a 10-hour gap between occurrences. Buddy's 3rd walk
+    is also dropped entirely.
+    Coverage: separate midday slots computed for each pet and task type.
     """
-    owner = Owner(name="Sam")
-    owner.add_window(time(8, 0), time(18, 0))
-    max_pet = Pet(name="Max", pet_type="dog")
-    owner.add_pet(max_pet)
-
-    feeding    = Task(TaskType.FEEDING,    name="Feeding",    duration_minutes=15, frequency=1)
-    medication = Task(TaskType.MEDICATION, name="Medication", duration_minutes=5,
-                      frequency=1, dependencies=[feeding])
-
-    plan = DailyPlan()
-    plan.scheduled.append(ScheduledTask(medication, _to_time(480), _to_time(485), "scheduled"))
-    plan.scheduled.append(ScheduledTask(feeding,    _to_time(540), _to_time(555), "scheduled"))
-
-    return {"Max": plan}, owner
+    owner = Owner(name="Taylor")
+    owner.add_window(time(7, 0), time(9, 0))
+    owner.add_window(time(17, 30), time(19, 0))
+    buddy = Pet(name="Buddy", pet_type="dog")
+    buddy.add_task(Task(TaskType.WALK,    duration_minutes=30, frequency=3))
+    buddy.add_task(Task(TaskType.FEEDING, duration_minutes=15, frequency=2))
+    miso = Pet(name="Miso", pet_type="cat")
+    miso.add_task(Task(TaskType.FEEDING,    duration_minutes=15, frequency=2))
+    miso.add_task(Task(TaskType.LITTER_BOX, duration_minutes=10, frequency=2))
+    owner.add_pet(buddy)
+    owner.add_pet(miso)
+    return owner
 
 
 # ---------------------------------------------------------------------------
-# Scenario 4 — Post-feeding gap (gastric torsion / bloat risk)
+# Scenario 4 — Puppy's high demands
 # ---------------------------------------------------------------------------
 
-def scenario_4() -> tuple:
+def scenario_4() -> Owner:
     """
-    Riley's dog Nova is scheduled for a walk only 5 minutes after feeding ends.
-    Vigorous activity within 30 minutes of eating can cause gastric dilatation-
-    volvulus (bloat) in dogs — a life-threatening condition.
-    The agent moves the walk to at least 30 minutes after feeding.
+    Riley has 07:00-09:00 and 18:00-20:00. Luna is a young puppy that needs
+    4 walks/day and 3 feedings. Puppies have a shorter 60-minute min-gap
+    between walk sessions, so 3 walks fit (morning, 18:00, 19:20), but the
+    4th is dropped. Only 2 of 3 feedings fit — the 3rd occurrence would need
+    a slot past 20:00. The feeding gap also exceeds 10 hours.
+    Coverage: dog walker for the missing midday walk + pet sitter for the
+    dropped feeding and gap.
     """
     owner = Owner(name="Riley")
-    owner.add_window(time(8, 0), time(18, 0))
-    nova = Pet(name="Nova", pet_type="dog")
-    owner.add_pet(nova)
-
-    feeding = Task(TaskType.FEEDING, name="Feeding",      duration_minutes=15, frequency=1)
-    walk    = Task(TaskType.WALK,    name="Morning Walk", duration_minutes=30, frequency=1)
-
-    plan = DailyPlan()
-    plan.scheduled.append(ScheduledTask(feeding, _to_time(480), _to_time(495), "scheduled"))
-    # Walk starts only 5 min after feeding ends — inside the 30-min post-feeding rest window.
-    plan.scheduled.append(ScheduledTask(walk, _to_time(500), _to_time(530), "scheduled"))
-
-    return {"Nova": plan}, owner
-
-
-# ---------------------------------------------------------------------------
-# Scenario 5 — Medication-feeding gap (absorption rule)
-# ---------------------------------------------------------------------------
-
-def scenario_5() -> tuple:
-    """
-    Sam's cat Miso is on medication that must be given with food, but needs
-    at least 10 minutes for the food to settle before the medication is absorbed
-    properly. The schedule has Medication starting 1 minute after Feeding ends.
-    The agent moves Medication to at least 10 minutes after feeding.
-    """
-    owner = Owner(name="Sam")
-    owner.add_window(time(8, 0), time(18, 0))
-    miso = Pet(name="Miso", pet_type="cat")
-    owner.add_pet(miso)
-
-    feeding    = Task(TaskType.FEEDING,    name="Feeding",    duration_minutes=15, frequency=1)
-    medication = Task(TaskType.MEDICATION, name="Medication", duration_minutes=5,
-                      frequency=1, dependencies=[feeding])
-
-    plan = DailyPlan()
-    plan.scheduled.append(ScheduledTask(feeding,    _to_time(540), _to_time(555), "scheduled"))
-    # Medication starts 1 min after feeding ends — needs at least 10 min gap.
-    plan.scheduled.append(ScheduledTask(medication, _to_time(556), _to_time(561), "scheduled"))
-
-    return {"Miso": plan}, owner
-
-
-# ---------------------------------------------------------------------------
-# Scenario 6 — Unresolvable gap: coverage window suggestion
-# ---------------------------------------------------------------------------
-
-def scenario_6() -> tuple:
-    """
-    Jordan is only available 07:00–09:00 and 18:00–20:00.
-    Buddy needs two feedings a day, but the 11-hour midday gap between
-    them exceeds the 8-hour recommended maximum. No slot exists within
-    Jordan's hours to close this gap.
-
-    Rather than silently leaving the conflict, PawPal+ computes a specific
-    time window where a pet sitter could handle the midday feeding.
-    """
-    owner = Owner(name="Jordan")
     owner.add_window(time(7, 0), time(9, 0))
     owner.add_window(time(18, 0), time(20, 0))
-    buddy = Pet(name="Buddy", pet_type="dog")
-    owner.add_pet(buddy)
-
-    feeding1 = Task(TaskType.FEEDING, name="Morning Feeding", duration_minutes=15, frequency=1)
-    feeding2 = Task(TaskType.FEEDING, name="Evening Feeding", duration_minutes=15, frequency=1)
-
-    plan = DailyPlan()
-    plan.scheduled.append(ScheduledTask(feeding1, _to_time(7 * 60 + 15), _to_time(7 * 60 + 30),  "scheduled"))
-    plan.scheduled.append(ScheduledTask(feeding2, _to_time(18 * 60 + 30), _to_time(18 * 60 + 45), "scheduled"))
-
-    return {"Buddy": plan}, owner
+    luna = Pet(name="Luna", pet_type="dog", age_group="puppy")
+    luna.add_task(Task(TaskType.WALK,    duration_minutes=20, frequency=4))
+    luna.add_task(Task(TaskType.FEEDING, duration_minutes=15, frequency=3))
+    owner.add_pet(luna)
+    return owner
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Scenario registry + interactive menu
 # ---------------------------------------------------------------------------
 
-def main():
+SCENARIOS = [
+    (
+        "Commuter's dog -- missed walk & feeding gap",
+        "Morgan: 07:00-09:00 and 18:00-19:30. Rex needs 3 walks; only 2 fit.",
+        scenario_1,
+    ),
+    (
+        "Tight-gap feeding -- feedings 12 h apart",
+        "Jordan: 07:00-08:00 and 20:00-21:00. Buddy's feedings exceed the 8 h limit.",
+        scenario_2,
+    ),
+    (
+        "Two-pet household -- shared slots, cascading gaps",
+        "Taylor: same narrow windows. Dog + cat compete; both end up with 10 h gaps.",
+        scenario_3,
+    ),
+    (
+        "Puppy's high demands -- multiple dropped tasks",
+        "Riley: 2 windows, puppy Luna needs 4 walks + 3 feedings; 4th walk + 3rd feeding dropped.",
+        scenario_4,
+    ),
+]
+
+
+def show_menu() -> None:
+    clear()
     print(DIVIDER)
-    print("  PAWPAL+ — AGENTIC CONFLICT DETECTION & REPAIR DEMO")
+    print("  PAWPAL+ -- SELECT A SCENARIO")
     print(DIVIDER)
     print()
+    for i, (title, description, _) in enumerate(SCENARIOS, 1):
+        print(f"  {i}. {title}")
+        print(f"     {description}")
+        print()
+    print("  Q. Quit")
+    print(SUBDIV)
 
-    plans, owner = scenario_1()
-    run_scenario(
-        "SCENARIO 1 — Simple overlap",
-        "Alex's dog Buddy: walk and feeding overlap by 10 minutes. One fix.",
-        plans, owner,
-    )
 
-    plans, owner = scenario_2()
-    run_scenario(
-        "SCENARIO 2 — Multi-pet cascade",
-        "Jordan's dog and cat each have a separate overlap. One fix per iteration.",
-        plans, owner,
-    )
-
-    plans, owner = scenario_3()
-    run_scenario(
-        "SCENARIO 3 — Dependency violation",
-        "Sam's dog Max: medication scheduled before its feeding dependency.",
-        plans, owner,
-    )
-
-    plans, owner = scenario_4()
-    run_scenario(
-        "SCENARIO 4 — Post-feeding gap (gastric torsion risk)",
-        "Riley's dog Nova: walk scheduled 5 min after feeding. Must wait 30 min.",
-        plans, owner,
-    )
-
-    plans, owner = scenario_5()
-    run_scenario(
-        "SCENARIO 5 — Medication-feeding gap (absorption rule)",
-        "Sam's cat Miso: medication given 1 min after feeding. Must wait 10 min.",
-        plans, owner,
-    )
-
-    plans, owner = scenario_6()
-    run_coverage_scenario(
-        "SCENARIO 6 — Unresolvable gap: coverage window suggestion",
-        "Jordan's dog Buddy: 11-hour feeding gap that no schedule change can fix.",
-        plans, owner,
-    )
+def main() -> None:
+    while True:
+        show_menu()
+        choice = input("  Select (1-4 or Q): ").strip().lower()
+        if choice == "q":
+            clear()
+            break
+        if choice.isdigit() and 1 <= int(choice) <= len(SCENARIOS):
+            idx = int(choice) - 1
+            title, description, setup_fn = SCENARIOS[idx]
+            owner = setup_fn()
+            clear()
+            run_scenario(f"SCENARIO {idx + 1} -- {title}", description, owner)
+            input("\n  Press Enter to return to menu...")
 
 
 if __name__ == "__main__":

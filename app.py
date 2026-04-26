@@ -389,6 +389,8 @@ if st.button("Generate daily plan", type="primary"):
             st.session_state["_owner"] = owner
             st.session_state.pop("_fixed_plans", None)
             st.session_state.pop("_agent_history", None)
+            st.session_state.pop("_coverage", None)
+            st.session_state.pop("_ai_summary", None)
 
 # ---------------------------------------------------------------------------
 # Schedule display + conflict detection (reads from session state)
@@ -447,90 +449,35 @@ if "_plans" in st.session_state:
 
     # Conflict detection
     conflicts = detect_conflicts(all_plans, owner, owner.pets)
+    coverage  = suggest_coverage_windows(all_plans, owner, owner.pets)
+
     if conflicts:
         st.divider()
         st.subheader("Conflicts Detected")
         for c in conflicts:
             icon = CONFLICT_ICONS.get(c.conflict_type, "")
             st.error(f"{icon} **{c.conflict_type.upper()}** — {c.reason}")
-
-        rec = recommend_service(conflicts)
-        if rec:
-            st.info(f"**Tip:** {rec}")
-
-        st.divider()
-        if st.button("Fix conflicts with AI", type="primary"):
-            with st.spinner("AI agent is repairing the schedule..."):
-                fixed_plans, history, coverage = ScheduleAgent().fix_schedule(
-                    all_plans, owner, owner.pets
-                )
-            st.session_state["_fixed_plans"]   = fixed_plans
-            st.session_state["_agent_history"] = history
-            st.session_state["_coverage"]      = coverage
     else:
-        if "_fixed_plans" not in st.session_state:
-            has_plan_warnings = any(plan.warnings for plan in all_plans.values())
-            if has_plan_warnings:
-                st.info("No scheduling conflicts detected, but some tasks could not be fully scheduled — see warnings above.")
-            else:
-                st.success("No conflicts — schedule is valid.")
+        has_plan_warnings = any(plan.warnings for plan in all_plans.values())
+        if has_plan_warnings:
+            st.info("No scheduling conflicts detected, but some tasks could not be fully scheduled — see warnings above.")
+        else:
+            st.success("No conflicts — schedule is valid.")
 
-# ---------------------------------------------------------------------------
-# AI-repaired schedule (displayed after agent runs)
-# ---------------------------------------------------------------------------
-if "_fixed_plans" in st.session_state:
-    fixed_plans = st.session_state["_fixed_plans"]
-    history     = st.session_state.get("_agent_history", [])
-    owner       = st.session_state["_owner"]
-
-    st.divider()
-    st.header("AI-Repaired Schedule")
-
-    with st.expander("Agent reasoning log"):
-        for step in history:
-            st.markdown(
-                f"**Iteration {step['iteration'] + 1}** — "
-                f"{step['conflicts_found']} conflict(s) found  \n"
-                f"AI suggested: `{step['claude_suggestion']}`"
-            )
-
-    combined_fixed = sorted(
-        [(sched, pet_name)
-         for pet_name, plan in fixed_plans.items()
-         for sched in plan.scheduled],
-        key=lambda x: x[0].start_time,
-    )
-    for entry, pet_name in combined_fixed:
-        tr = (f"{entry.start_time.strftime('%H:%M')} – "
-              f"{entry.end_time.strftime('%H:%M')}")
-        emoji    = TASK_EMOJI.get(entry.task.task_type, "")
-        pet_obj  = next((p for p in owner.pets if p.name == pet_name), None)
-        pet_icon = PET_EMOJI.get(pet_obj.pet_type, "") if pet_obj else ""
-        st.markdown(f"**{tr}** &nbsp; {emoji} {entry.task.name} &nbsp; {pet_icon} _{pet_name}_")
-
-    remaining = detect_conflicts(fixed_plans, owner, owner.pets)
-    if remaining:
-        st.warning(f"{len(remaining)} conflict(s) could not be fully resolved.")
-        rec = recommend_service(remaining)
-        if rec:
-            st.info(f"**Recommendation:** {rec}")
-    else:
-        st.success(f"All conflicts resolved in {len(history)} iteration(s).")
-
-    # Coverage window suggestions — specific time slots for external services.
-    coverage = st.session_state.get("_coverage", [])
     if coverage:
         st.divider()
-        st.subheader("Suggested Coverage Windows")
+        st.subheader("Coverage Needed")
         st.caption(
-            "These time slots would resolve gaps that can't be fixed by rescheduling alone. "
+            "These time slots would resolve gaps that cannot be fixed by rescheduling alone. "
             "Add them as owner availability windows or book an external service."
         )
-        SERVICE_ICON = {"dog_walker": "🦮", "pet_sitter": "🏠", "owner_window": "📅"}
-        SERVICE_LABEL = {"dog_walker": "Dog walker", "pet_sitter": "Pet sitter", "owner_window": "Owner availability"}
+        SERVICE_ICON  = {"dog_walker": "🦮", "pet_sitter": "🏠", "owner_window": "📅"}
+        SERVICE_LABEL = {"dog_walker": "Dog walker", "pet_sitter": "Pet sitter",
+                         "owner_window": "Owner availability"}
         for cw in coverage:
             icon  = SERVICE_ICON.get(cw.service_type, "📋")
-            label = SERVICE_LABEL.get(cw.service_type, cw.service_type.replace("_", " ").title())
+            label = SERVICE_LABEL.get(cw.service_type,
+                                      cw.service_type.replace("_", " ").title())
             pet_obj  = next((p for p in owner.pets if p.name == cw.pet_name), None)
             pet_icon = PET_EMOJI.get(pet_obj.pet_type, "") if pet_obj else ""
             st.info(
@@ -539,3 +486,19 @@ if "_fixed_plans" in st.session_state:
                 + (f" &nbsp; _(covers: {', '.join(cw.tasks)})_" if cw.tasks else "")
                 + f"  \n{cw.reason}"
             )
+
+        st.divider()
+        if st.button("Explain coverage needs with AI", type="primary"):
+            with st.spinner("Generating summary..."):
+                summary = ScheduleAgent().summarize_coverage(
+                    all_plans, conflicts, coverage, owner, owner.pets
+                )
+            st.session_state["_ai_summary"] = summary
+
+# ---------------------------------------------------------------------------
+# AI coverage summary (displayed after "Explain coverage needs with AI")
+# ---------------------------------------------------------------------------
+if "_ai_summary" in st.session_state:
+    st.divider()
+    st.subheader("AI Summary")
+    st.info(st.session_state["_ai_summary"])

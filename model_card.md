@@ -22,7 +22,7 @@ pytest test_scheduler.py test_agent.py -v
 | `test_scheduler.py` | 36 | Scheduler behavior — urgency scoring, dependency ordering, gap enforcement, breed multipliers, time window constraints |
 | `test_agent.py` | 103 | Conflict detection (7 types), agent fix parsing, breed trie, multiplier constants, coverage window suggestions |
 
-The agent's `fix_schedule()` loop is not covered by automated tests — it requires a live API key. `demo_agent.py` provides manual end-to-end verification across 3 fixed scenarios (simple overlap, multi-pet cascade, dependency violation).
+The agent's `fix_schedule()` loop is not covered by automated tests — it requires a live API key and is exercised via the Streamlit UI. `demo_agent.py` provides manual end-to-end verification of the scheduling pipeline and coverage-window engine across 4 realistic scenarios built from real scheduler output (no API key needed, no hand-crafted conflicts).
 
 **What worked:** Rule-based conflict detection is precisely testable — each conflict type has a definition and dedicated fixtures for both the positive and negative case. Writing both cases together (gap warning present / gap warning absent) caught logic errors that the positive case alone would miss.
 
@@ -63,3 +63,6 @@ Early in development, Claude suggested replacing the deterministic scheduler wit
 
 **Flawed — moving the dependency instead of the dependent task:**
 In an early prompt for the dependency-violation scenario, Claude suggested moving *Feeding* earlier so that *Medication* could stay at 08:00. That was backwards — Feeding's time was intentional. The fix was to add the explicit rule "never move the dependency itself" to the prompt. This highlighted a general principle: the model will not infer domain constraints that are not stated; they must be written into the prompt.
+
+**Flawed — demo cases that couldn't occur:**
+Claude Code repeatedly suggested demo scenarios (overlapping tasks, medication before feeding) that the deterministic scheduler would never produce — it enforces all those constraints itself before any conflict detection runs. The real use case for the coverage-window engine is when the owner's availability windows are too narrow to fit all occurrences, or when scheduled tasks end up too far apart to meet care minimums. Correcting this required stepping back from the AI repair framing and redesigning the demo around what the scheduler actually produces. The CLI demo now uses real `Scheduler.generate_all_plans()` output rather than hand-crafted conflicting plans.

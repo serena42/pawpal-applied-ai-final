@@ -159,3 +159,76 @@ class ScheduleAgent:
             f"  [{c.conflict_type.upper()}] {c.reason} | Hint: {c.suggested_fix}"
             for c in conflicts
         )
+
+    # ------------------------------------------------------------------
+    # Coverage summary — the primary AI feature in the current system
+    # ------------------------------------------------------------------
+
+    def summarize_coverage(self, plans: dict, conflicts: list,
+                           coverage: list, owner, pets) -> str:
+        """
+        Ask Gemini to synthesize the coverage window suggestions into a
+        concise, actionable plain-language message for the owner.
+        """
+        if not coverage and not conflicts:
+            return "The schedule looks good — no coverage help needed today."
+        prompt = self._build_summary_prompt(plans, conflicts, coverage, owner)
+        try:
+            response = self.client.models.generate_content(
+                model=self.MODEL,
+                contents=prompt,
+            )
+            return response.text or "Unable to generate summary."
+        except Exception:
+            return "Unable to generate summary — check your API key."
+
+    def _build_summary_prompt(self, plans: dict, conflicts: list,
+                              coverage: list, owner) -> str:
+        windows_str = ", ".join(
+            f"{w.start.strftime('%H:%M')}-{w.end.strftime('%H:%M')}"
+            for w in owner.availability_windows
+        )
+        all_tasks = sorted(
+            [(pet_name, st)
+             for pet_name, plan in plans.items()
+             for st in plan.scheduled],
+            key=lambda x: _mins(x[1].start_time),
+        )
+        schedule_str = "\n".join(
+            f"  {st.start_time.strftime('%H:%M')}-{st.end_time.strftime('%H:%M')}: "
+            f"{st.task.name} ({pet_name})"
+            for pet_name, st in all_tasks
+        ) or "  (nothing scheduled)"
+
+        warning_str = "\n".join(
+            f"  [{pet_name}] {w}"
+            for pet_name, plan in plans.items()
+            for w in plan.warnings
+        ) or "  None"
+
+        conflict_str = "\n".join(
+            f"  [{c.conflict_type}] {c.reason}"
+            for c in conflicts
+        ) or "  None"
+
+        coverage_str = "\n".join(
+            f"  {cw.start}-{cw.end}: {cw.service_type.replace('_', ' ')} "
+            f"for {cw.pet_name} ({', '.join(cw.tasks) or 'general care'}) — {cw.reason}"
+            for cw in coverage
+        ) or "  None needed"
+
+        return (
+            f"You are a pet care scheduling assistant helping {owner.name} plan their day.\n\n"
+            f"Owner availability: {windows_str}\n\n"
+            f"Today's schedule (what fit in the available windows):\n{schedule_str}\n\n"
+            f"Scheduling warnings (tasks the system could not fully fit):\n{warning_str}\n\n"
+            f"Detected conflicts:\n{conflict_str}\n\n"
+            f"Coverage windows computed to close the gaps:\n{coverage_str}\n\n"
+            f"Write a short message (3-5 sentences) to {owner.name} that:\n"
+            f"- Explains the scheduling problem in plain language\n"
+            f"- Specifies what kind of helper is needed (dog walker vs pet sitter) and when\n"
+            f"- Notes if nearby coverage windows could be combined into one visit\n"
+            f"- Gives one clear action item\n\n"
+            f"Be specific about times. Be friendly but concise. "
+            f"Do not suggest the owner change their schedule."
+        )

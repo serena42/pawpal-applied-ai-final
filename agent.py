@@ -172,7 +172,7 @@ class ScheduleAgent:
         """
         if not coverage and not conflicts:
             return "The schedule looks good — no coverage help needed today."
-        prompt = self._build_summary_prompt(plans, conflicts, coverage, owner)
+        prompt = self._build_summary_prompt(plans, conflicts, coverage, owner, pets)
         try:
             response = self.client.models.generate_content(
                 model=self.MODEL,
@@ -183,7 +183,7 @@ class ScheduleAgent:
             return "Unable to generate summary — check your API key."
 
     def _build_summary_prompt(self, plans: dict, conflicts: list,
-                              coverage: list, owner) -> str:
+                              coverage: list, owner, pets) -> str:
         windows_str = ", ".join(
             f"{w.start.strftime('%H:%M')}-{w.end.strftime('%H:%M')}"
             for w in owner.availability_windows
@@ -217,18 +217,47 @@ class ScheduleAgent:
             for cw in coverage
         ) or "  None needed"
 
+        profile_lines = []
+        for pet in pets:
+            age = getattr(pet, 'age_group', None)
+            energy = getattr(pet, 'energy_level', None)
+            ptype = getattr(pet, 'pet_type', 'pet')
+            desc_parts = [ptype]
+            if age:
+                desc_parts.append(age)
+            if energy:
+                desc_parts.append(f"{energy} energy")
+            task_desc = ", ".join(
+                f"{t.name} x{t.frequency}/day ({t.duration_minutes} min)"
+                for t in getattr(pet, 'tasks', [])
+            )
+            line = f"  {pet.name}: {', '.join(desc_parts)}"
+            if task_desc:
+                line += f" — needs: {task_desc}"
+            profile_lines.append(line)
+        pet_profiles_str = "\n".join(profile_lines) or "  (no profile data)"
+
         return (
-            f"You are a pet care scheduling assistant helping {owner.name} plan their day.\n\n"
+            f"You are a knowledgeable pet care assistant helping {owner.name} plan their day.\n\n"
             f"Owner availability: {windows_str}\n\n"
+            f"Pet profiles:\n{pet_profiles_str}\n\n"
             f"Today's schedule (what fit in the available windows):\n{schedule_str}\n\n"
             f"Scheduling warnings (tasks the system could not fully fit):\n{warning_str}\n\n"
             f"Detected conflicts:\n{conflict_str}\n\n"
             f"Coverage windows computed to close the gaps:\n{coverage_str}\n\n"
-            f"Write a short message (3-5 sentences) to {owner.name} that:\n"
-            f"- Explains the scheduling problem in plain language\n"
-            f"- Specifies what kind of helper is needed (dog walker vs pet sitter) and when\n"
-            f"- Notes if nearby coverage windows could be combined into one visit\n"
-            f"- Gives one clear action item\n\n"
-            f"Be specific about times. Be friendly but concise. "
-            f"Do not suggest the owner change their schedule."
+            f"Write a message to {owner.name} with two parts:\n\n"
+            f"1. COVERAGE PLAN (2-3 sentences): State clearly what external help is needed, "
+            f"what service type (dog walker vs pet sitter), and the specific time window. "
+            f"Note if nearby windows can be combined into one visit.\n\n"
+            f"2. PET CARE INSIGHTS (1-2 tips per pet with missed or gapped tasks): "
+            f"Draw on the pet's age group, energy level, and the specific missed task to give "
+            f"genuinely useful, actionable advice the owner or helper can act on. "
+            f"Examples of the kind of insight to aim for: a puppy's missed walk is a prime "
+            f"training opportunity — suggest leash manners or sit/stay practice; a high-energy "
+            f"dog with a long feeding gap benefits from a puzzle feeder to prevent anxiety; "
+            f"a senior pet's medication timing matters for absorption — suggest a small treat "
+            f"paired with the pill; a cat alone all day may need an interactive toy left out. "
+            f"Make the tips specific to this pet's profile, not generic.\n\n"
+            f"Be warm but practical. Do not suggest the owner change their schedule. "
+            f"Keep the total response under 200 words."
         )

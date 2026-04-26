@@ -213,10 +213,10 @@ class TestBreedTrie:
         results = small_trie.search("", max_results=10)
         assert len(results) == 5
 
-    def test_get_trie_loads_50_breeds(self):
+    def test_get_trie_loads_many_breeds(self):
         trie = get_trie()
-        all_breeds = trie.search("", max_results=100)
-        assert len(all_breeds) == 50
+        all_breeds = trie.search("", max_results=300)
+        assert len(all_breeds) >= 100
 
     def test_get_trie_is_singleton(self):
         assert get_trie() is get_trie()

@@ -17,7 +17,6 @@ from models import (
     _MIN_MED_FEEDING_GAP, _MIN_CARE_TASK_GAP,
 )
 from conflict_detector import detect_conflicts, Conflict, suggest_coverage_windows
-from agent import ScheduleAgent
 from breed_db import BreedTrie, get_trie
 
 
@@ -156,97 +155,6 @@ class TestOutsideWindowDetection:
 # ---------------------------------------------------------------------------
 # ScheduleAgent fix-application tests (no API key required)
 # ---------------------------------------------------------------------------
-
-@pytest.fixture
-def agent():
-    """ScheduleAgent instance with no Anthropic client (skips __init__)."""
-    return ScheduleAgent.__new__(ScheduleAgent)
-
-
-class TestMoveTask:
-    def test_move_task_updates_times(self, agent):
-        st = make_st(TaskType.WALK, "Morning Walk", 480, 30)        # 8:00–8:30
-        plans = single_pet_plans(sts=[st])
-        result = agent._move_task(plans, "Morning Walk", 600)        # move to 10:00
-        updated = result["Buddy"].scheduled[0]
-        assert updated.start_time == _to_time(600)
-        assert updated.end_time == _to_time(630)
-
-    def test_move_task_case_insensitive(self, agent):
-        st = make_st(TaskType.FEEDING, "Feeding", 480, 15)
-        plans = single_pet_plans(sts=[st])
-        result = agent._move_task(plans, "feeding", 510)
-        assert result["Buddy"].scheduled[0].start_time == _to_time(510)
-
-    def test_move_task_no_match_returns_unchanged(self, agent):
-        st = make_st(TaskType.WALK, "Morning Walk", 480, 30)
-        plans = single_pet_plans(sts=[st])
-        result = agent._move_task(plans, "NonExistent", 600)
-        assert result["Buddy"].scheduled[0].start_time == _to_time(480)
-
-
-class TestSwapTasks:
-    def test_swap_exchanges_times(self, agent):
-        st_a = make_st(TaskType.WALK, "Morning Walk", 480, 30)      # 8:00–8:30
-        st_b = make_st(TaskType.FEEDING, "Feeding", 510, 15)         # 8:30–8:45
-        plans = single_pet_plans(sts=[st_a, st_b])
-        result = agent._swap_tasks(plans, "Morning Walk", "Feeding")
-        scheduled = result["Buddy"].scheduled
-        walk = next(s for s in scheduled if s.task.name == "Morning Walk")
-        feeding = next(s for s in scheduled if s.task.name == "Feeding")
-        assert walk.start_time == _to_time(510)
-        assert feeding.start_time == _to_time(480)
-
-    def test_swap_missing_task_returns_unchanged(self, agent):
-        st = make_st(TaskType.WALK, "Morning Walk", 480, 30)
-        plans = single_pet_plans(sts=[st])
-        result = agent._swap_tasks(plans, "Morning Walk", "GhostTask")
-        assert result["Buddy"].scheduled[0].start_time == _to_time(480)
-
-
-class TestApplyFix:
-    def test_move_without_from_time(self, agent):
-        st = make_st(TaskType.FEEDING, "Feeding", 480, 15)
-        plans = single_pet_plans(sts=[st])
-        fix = {"action": "move", "task": "Feeding", "to_time": "09:30"}
-        result = agent._apply_fix(plans, fix)
-        assert result["Buddy"].scheduled[0].start_time == _to_time(9 * 60 + 30)
-
-    def test_move_with_from_time_disambiguates(self, agent):
-        st = make_st(TaskType.FEEDING, "Feeding", 480, 15)
-        plans = single_pet_plans(sts=[st])
-        fix = {"action": "move", "task": "Feeding", "from_time": "08:00", "to_time": "09:00"}
-        result = agent._apply_fix(plans, fix)
-        assert result["Buddy"].scheduled[0].start_time == _to_time(540)
-
-    def test_swap_exchanges_times(self, agent):
-        st_a = make_st(TaskType.WALK, "Walk", 480, 30)
-        st_b = make_st(TaskType.FEEDING, "Feeding", 510, 15)
-        plans = single_pet_plans(sts=[st_a, st_b])
-        fix = {"action": "swap", "task_a": "Walk", "task_b": "Feeding"}
-        result = agent._apply_fix(plans, fix)
-        scheduled = result["Buddy"].scheduled
-        walk = next(s for s in scheduled if s.task.name == "Walk")
-        assert walk.start_time == _to_time(510)
-
-    def test_none_action_returns_unchanged(self, agent):
-        st = make_st(TaskType.WALK, "Walk", 480, 30)
-        plans = single_pet_plans(sts=[st])
-        result = agent._apply_fix(plans, {"action": "none"})
-        assert result["Buddy"].scheduled[0].start_time == _to_time(480)
-
-    def test_missing_to_time_returns_unchanged(self, agent):
-        st = make_st(TaskType.WALK, "Walk", 480, 30)
-        plans = single_pet_plans(sts=[st])
-        result = agent._apply_fix(plans, {"action": "move", "task": "Walk"})
-        assert result["Buddy"].scheduled[0].start_time == _to_time(480)
-
-    def test_empty_dict_returns_unchanged(self, agent):
-        st = make_st(TaskType.WALK, "Walk", 480, 30)
-        plans = single_pet_plans(sts=[st])
-        result = agent._apply_fix(plans, {})
-        assert result["Buddy"].scheduled[0].start_time == _to_time(480)
-
 
 # ---------------------------------------------------------------------------
 # BreedTrie tests

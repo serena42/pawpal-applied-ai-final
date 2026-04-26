@@ -20,7 +20,6 @@ Two additional features support this:
 
 - **Coverage window suggestions** — the rule-based conflict detector identifies seven conflict types (overlap, dependency, gap, dropped occurrence, and more) and computes specific, actionable time slots, routing walks to dog walkers and feeding/medication gaps to pet sitters.
 - **Breed-tuned task defaults** — a trie-based breed database applies age-group and energy-level multipliers to task duration and frequency, so a senior high-energy dog gets different defaults than a low-energy puppy.
-- **Agentic repair loop (edge case)** — if a user manually drags a task to a conflicting slot in the Streamlit UI, `ScheduleAgent.fix_schedule()` calls Gemini iteratively (up to 5 rounds) to propose and apply structured fixes (move / swap), re-running conflict detection after each.
 
 ---
 
@@ -60,11 +59,6 @@ flowchart TD
     H -->|pet profiles + coverage\nwindows as prompt| I1[Gemini 2.5 Flash Lite\nLLM API]
     I1 -->|plain-language summary\n+ pet-care tips| G
 
-    G -->|Fix conflicts with AI\nbutton — edge cases| J[ScheduleAgent\nfix_schedule — up to 5 rounds]
-    J -->|schedule + conflict hints\nJSON prompt| I2[Gemini 2.5 Flash Lite\nLLM API]
-    I2 -->|JSON fix\naction · task · from_time · to_time| K[Apply Fix\n_apply_fix]
-    K -->|re-detect| E
-
     G -->|save| L[(pawpal_save.json\nPersistence)]
     L -->|load| A
 
@@ -88,7 +82,7 @@ flowchart TD
 |---|---|
 | `models.py` | Data model + Scheduler algorithm |
 | `conflict_detector.py` | Conflict detection + coverage window suggestions |
-| `agent.py` | Gemini-powered coverage synthesis (`summarize_coverage`) and iterative repair loop (`fix_schedule`) |
+| `agent.py` | Gemini-powered coverage synthesis (`summarize_coverage`) |
 | `breed_db.py` | Trie-based breed lookup + age/energy multipliers |
 | `app.py` | Streamlit UI |
 | `main.py` | CLI demo (no API key needed) |
@@ -211,15 +205,20 @@ are calmer and less likely to over-eat when they have enrichment available.
 
 ## Design Decisions
 
-**Gemini 2.5 Flash Lite.** The primary AI task (coverage synthesis) is open-ended but short — a few sentences of plain-language advice. The secondary task (repair loop) is narrow and format-constrained — one JSON fix object. Flash Lite handles both cheaply and fast; a larger model adds latency with no observable quality gain for either task.
+**Gemini 2.5 Flash Lite.** The AI task (coverage synthesis) is open-ended but short — a few sentences of plain-language advice. Flash Lite handles this cheaply and fast; a larger model adds latency with no observable quality gain.
 
-**Two distinct output modes.** `summarize_coverage()` uses free-text output — the prompt asks for plain language and does not constrain the format. `fix_schedule()` enforces `response_mime_type="application/json"` with an exact schema (`action`, `task`, `from_time`, `to_time`). Invalid or missing JSON responses fall back to returning the plan unchanged — the system never crashes on a bad AI response.
-
-**Rule-based scheduling, AI for synthesis and repair.** The original scheduler is deterministic and directly testable — every output can be verified by re-running conflict detection. Letting the AI schedule would make the system unpredictable and untestable. AI is confined to two well-scoped roles: narrating rule-based output in plain language, and proposing task moves when a user manually creates a conflict.
-
-**Conflict hints reduce hallucination risk.** For the repair loop, the prompt includes a specific hint per conflict (`"Move Feeding to 08:30 or later"`) rather than asking the AI to reason from scratch. This nudges the model toward the right class of fix without giving the full answer, dramatically reducing incorrect suggestions.
+**Rule-based scheduling, AI for synthesis.** The scheduler is deterministic and directly testable — every output can be verified by re-running conflict detection. Letting the AI schedule would make the system unpredictable and untestable. AI is confined to one well-scoped role: narrating rule-based output in plain language with pet-specific insights.
 
 **Trie for breed lookup.** Owners type a breed name. Trie prefix search is O(k) per lookup, requires no model, and handles partial matches ("Golden" → "Golden Retriever"). A vector store would add infrastructure cost and complexity with no benefit for this exact/prefix-match use case.
+
+**Profile-tuned vs. generic AI output.** The coverage synthesis prompt passes each pet's species, age group, energy level, and task list to Gemini. The difference is measurable — compare the tip generated for Buddy (adult dog, high energy) in Example 2 with what a prompt stripped of all profile data produces:
+
+| | AI output |
+|---|---|
+| **With profile context** | *"Buddy's midday walk is a great opportunity for leash training — adult dogs with high energy respond well to structured heel work during walks."* |
+| **Without profile context** | *"Make sure your dog gets enough exercise and has access to fresh water throughout the day."* |
+
+The profile-aware tip names the age group, energy level, and a specific training technique the helper can act on. Removing the pet profile from the prompt degrades the output to advice that fits any dog in any situation — which is no advice at all.
 
 ---
 
@@ -236,7 +235,7 @@ python eval_coverage.py                               # 19 predefined checks acr
 
 `eval_coverage.py` runs 19 PASS/FAIL checks across 6 scenarios (including a control case where everything fits and no coverage is needed). No API key required.
 
-The AI features (`fix_schedule()` and `summarize_coverage()`) require a live API key and are exercised via the Streamlit UI and demo scenario 5.
+`summarize_coverage()` requires a live API key and is exercised via the Streamlit UI and demo scenario 5.
 
 ---
 

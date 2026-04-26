@@ -8,7 +8,7 @@ from models import (
     ACTIVITY_TASKS,
 )
 from persistence import save, load, save_exists, owner_to_dict
-from conflict_detector import detect_conflicts, detect_suggested_slots, recommend_service, suggest_coverage_windows
+from conflict_detector import detect_conflicts, detect_suggested_slots, suggest_coverage_windows
 from agent import ScheduleAgent
 from breed_db import get_trie
 

@@ -266,9 +266,6 @@ class DailyPlan:
         self.scheduled: list[ScheduledTask] = []
         self.warnings: list[str] = []
 
-    def display(self) -> None:
-        pass  # TODO: implement display logic
-
     def __repr__(self) -> str:
         return f"DailyPlan({len(self.scheduled)} tasks, {len(self.warnings)} warnings)"
 
@@ -489,16 +486,6 @@ class Scheduler:
                 if feed_end <= slot_start < feed_end + POST_FEEDING_GAP:
                     return feed_end + POST_FEEDING_GAP
         return None
-
-    def _fits_in_window(self, task: Task, window: AvailabilityWindow, start_time: time) -> bool:
-        """Return True if task can start at start_time and finish within the window."""
-        start = _mins(start_time)
-        end = start + task.duration_minutes
-        if start < _mins(window.start) or end > _mins(window.end):
-            return False
-        if task.latest and end > _mins(task.latest):
-            return False
-        return True
 
     def _check_gaps(self, scheduled: list[ScheduledTask]) -> list[str]:
         """Return warnings for task types whose consecutive occurrences are too far apart."""

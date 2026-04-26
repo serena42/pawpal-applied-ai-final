@@ -1,7 +1,7 @@
 """
 PawPal+ Demo — Scheduling Pipeline & Coverage Suggestions
 ==========================================================
-Shows the full pipeline across four realistic scenarios.
+Shows the full pipeline across five scenarios.
 
 The deterministic scheduler places tasks within the owner's availability
 windows. When it can't fit everything — too many occurrences, windows too
@@ -19,6 +19,8 @@ Scenarios
                           cat; separate coverage windows computed for each
 4. Puppy's high demands — Luna needs 4 walks + 3 feedings; only 3 walks and
                           2 feedings fit in two narrow windows
+5. AI synthesis         — Scenario 3 with Gemini; synthesizes coverage into
+                          plain-language recommendation  [requires GEMINI_API_KEY]
 
 Run:
     python demo_agent.py

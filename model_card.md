@@ -2,7 +2,13 @@
 
 ## System Overview
 
-PawPal+ uses Google Gemini 2.5 Flash Lite as a conflict-repair agent inside a larger rule-based pet care scheduling system. The LLM is not responsible for producing schedules — it proposes a single structured fix (move or swap a task) when the deterministic scheduler produces a plan with conflicts. Every suggestion is validated by re-running the conflict detector before being accepted.
+PawPal+ uses Google Gemini 2.5 Flash Lite for two distinct purposes inside a larger rule-based scheduling system.
+
+**Primary use — coverage synthesis.** After the deterministic scheduler runs and the rule-based conflict detector computes coverage windows (specific time slots for a dog walker or pet sitter), `ScheduleAgent.summarize_coverage()` calls Gemini to translate those windows into a 3–5 sentence plain-language message for the owner — explaining what couldn't fit, what kind of help is needed and when, and whether nearby windows could be combined into a single visit. The LLM output is free text; no structured schema is enforced.
+
+**Secondary use — conflict repair (edge cases).** The Streamlit UI also offers "Fix conflicts with AI": if tasks are in conflicting positions, `ScheduleAgent.fix_schedule()` calls Gemini iteratively (up to five rounds) to propose a single structured fix (move or swap) per round, validated by re-running conflict detection. This path is rarely triggered in practice — the deterministic scheduler prevents most conflict types before they occur — but handles cases when a user manually adjusts a task to an invalid slot.
+
+The LLM is never responsible for producing or owning the schedule. All scheduling decisions come from the deterministic algorithm; Gemini's role is either synthesis (explaining rule-based output in plain language) or repair (proposing a single corrective move, validated by rules).
 
 **Intended use:** Personal, single-user daily pet care planning. Not a substitute for veterinary advice.
 
@@ -21,12 +27,13 @@ pytest test_scheduler.py test_agent.py -v
 |---|---|---|
 | `test_scheduler.py` | 36 | Scheduler behavior — urgency scoring, dependency ordering, gap enforcement, breed multipliers, time window constraints |
 | `test_agent.py` | 103 | Conflict detection (7 types), agent fix parsing, breed trie, multiplier constants, coverage window suggestions |
+| `eval_coverage.py` | 19 checks | Scheduling pipeline + coverage engine — 6 predefined scenarios, PASS/FAIL output, all passing |
 
-The agent's `fix_schedule()` loop is not covered by automated tests — it requires a live API key and is exercised via the Streamlit UI. `demo_agent.py` provides manual end-to-end verification of the scheduling pipeline and coverage-window engine across 4 realistic scenarios built from real scheduler output (no API key needed, no hand-crafted conflicts).
+`fix_schedule()` and `summarize_coverage()` require a live API key and are exercised via the Streamlit UI and demo scenario 5 respectively. `demo_agent.py` provides manual end-to-end verification across 5 realistic scenarios built from real scheduler output (scenarios 1–4 need no API key; scenario 5 calls Gemini).
 
-**What worked:** Rule-based conflict detection is precisely testable — each conflict type has a definition and dedicated fixtures for both the positive and negative case. Writing both cases together (gap warning present / gap warning absent) caught logic errors that the positive case alone would miss.
+**What worked:** Rule-based conflict detection is precisely testable — each conflict type has a definition and dedicated fixtures for both the positive and negative case. Writing both cases together (gap warning present / gap warning absent) caught logic errors that the positive case alone would miss. The `eval_coverage.py` harness extended the same pattern to the coverage-window engine: each scenario is a claim about what the scheduler produces and what coverage the engine suggests, with a PASS/FAIL verdict.
 
-**What didn't work initially:** An early version of the fix parser used regex, which silently dropped suggestions phrased unexpectedly. Switching to JSON structured output (`response_mime_type="application/json"`) made parsing failures explicit and eliminated the ambiguity.
+**What didn't work initially:** An early version of the fix parser used regex, which silently dropped suggestions phrased unexpectedly. Switching to JSON structured output (`response_mime_type="application/json"`) made parsing failures explicit and eliminated the ambiguity. This enforcement applies only to `fix_schedule()` — `summarize_coverage()` uses free-text output, where structured format would defeat the purpose.
 
 ---
 
@@ -66,3 +73,6 @@ In an early prompt for the dependency-violation scenario, Claude suggested movin
 
 **Flawed — demo cases that couldn't occur:**
 Claude Code repeatedly suggested demo scenarios (overlapping tasks, medication before feeding) that the deterministic scheduler would never produce — it enforces all those constraints itself before any conflict detection runs. The real use case for the coverage-window engine is when the owner's availability windows are too narrow to fit all occurrences, or when scheduled tasks end up too far apart to meet care minimums. Correcting this required stepping back from the AI repair framing and redesigning the demo around what the scheduler actually produces. The CLI demo now uses real `Scheduler.generate_all_plans()` output rather than hand-crafted conflicting plans.
+
+**Evolved — primary AI role shifted from repair to synthesis:**
+Once the demo was redesigned around real scheduler output, a deeper consequence became clear: the repair loop had almost nothing to do. The deterministic scheduler prevents most conflict types before they occur, so `fix_schedule()` rarely triggers in practice. The more valuable AI opportunity was different in kind — the rule-based coverage engine computes technically correct windows (specific times for a dog walker or pet sitter) but produces terse, mechanical output the owner still has to interpret. Gemini's language ability is a better fit for translating five overlapping coverage windows into a single actionable sentence ("one midday visit from 13:00 covers all four gaps") than for the structured fix-selection problem the repair loop was solving. This shifted the primary AI call from a format-constrained JSON output task to a natural-language synthesis task, and `summarize_coverage()` became the main AI feature rather than an afterthought.

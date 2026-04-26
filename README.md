@@ -2,9 +2,11 @@
 
 **Applied AI Final Project** | CodePath | Spring 2026
 
+PawPal+ helps pet owners plan their day when their schedule can't cover everything their pets need. A deterministic scheduler places care tasks within the owner's available hours; when tasks can't all fit or end up too far apart, the system computes specific coverage windows (dog walker / pet sitter) and uses Gemini 2.5 Flash Lite to explain those windows in plain language — including care tips tailored to each pet's age group and energy level.
+
 ---
 
-## Original Project
+## Base Project
 
 **PawPal** (Modules 1–3) was a rule-based daily pet care planner built with Python and Streamlit. An owner describes their available hours and their pets' care tasks; the scheduler produces a time-blocked daily plan that respects task priority, dependency ordering (e.g., medication after feeding), and recurring-task spacing. It used no external AI — all scheduling decisions came from a deterministic greedy algorithm with composite urgency scoring.
 
@@ -12,81 +14,95 @@
 
 ## What PawPal+ Adds
 
-PawPal+ extends the original with three substantial AI features:
+**AI coverage synthesis** is the primary new feature. When the scheduler can't fit all occurrences of a task, or when tasks end up spaced beyond safe limits, the conflict detector computes the minimum external help needed — specific time slots for a dog walker or pet sitter. `ScheduleAgent.summarize_coverage()` then calls Gemini to turn those windows into a plain-language recommendation with pet-care insights specific to each pet's profile (e.g., using a puppy's missed walk as a leash-training session, or recommending a puzzle feeder for a high-energy dog facing a long gap between feedings).
 
-1. **Coverage window suggestions with AI synthesis** — after the scheduler runs, the conflict detector identifies tasks that couldn't fit or ended up spaced too far apart, and computes specific time slots where a dog walker or pet sitter would close each gap. `ScheduleAgent.summarize_coverage()` then calls Gemini 2.5 Flash Lite to translate those windows into a concise, actionable plain-language message for the owner — explaining what the problem is, what kind of help is needed and when, and whether nearby coverage windows could be combined into a single visit.
+Two additional features support this:
 
-2. **Agentic repair loop (Streamlit UI edge case)** — the UI also offers "Fix conflicts with AI": if tasks end up in conflicting positions, `ScheduleAgent.fix_schedule()` calls Gemini iteratively (up to five rounds) to propose and apply a single structured fix (move or swap) per round, re-running conflict detection after each. In practice this path is rarely triggered — the deterministic scheduler prevents most conflict types before they occur — but it handles cases when a user manually adjusts a task to an invalid slot.
-
-3. **Breed-tuned task defaults** — a trie-based breed database adjusts task duration and frequency multipliers for age group and energy level (e.g., a senior high-energy dog has longer walk durations than a puppy at low energy).
+- **Coverage window suggestions** — the rule-based conflict detector identifies seven conflict types (overlap, dependency, gap, dropped occurrence, and more) and computes specific, actionable time slots, routing walks to dog walkers and feeding/medication gaps to pet sitters.
+- **Breed-tuned task defaults** — a trie-based breed database applies age-group and energy-level multipliers to task duration and frequency, so a senior high-energy dog gets different defaults than a low-energy puppy.
+- **Agentic repair loop (edge case)** — if a user manually drags a task to a conflicting slot in the Streamlit UI, `ScheduleAgent.fix_schedule()` calls Gemini iteratively (up to 5 rounds) to propose and apply structured fixes (move / swap), re-running conflict detection after each.
 
 ---
 
-## Architecture Overview
+## Demo
 
-  ```mermaid
-  flowchart TD
-      A([User — Streamlit UI or CLI]) -->|owner availability\npet type + breed| B
+> **Add your Loom link here:** `https://www.loom.com/share/...`
 
-      B[Breed DB\nBreedTrie prefix search] -->|age/energy multipliers\napplied to duration +\nfrequency| C
+**What the recording should show (2–3 minutes):**
 
-      C[Scheduler\nmodels.py] -->|urgency scoring\ndependency sort\nslot assignment| D
+1. Run `python demo_agent.py`, select **Scenario 1** (commuter's dog) — show the scheduler output, the dropped walk warning, and the coverage window suggestions printed to the terminal.
+2. Select **Scenario 5** (AI synthesis) — show the same pipeline passing coverage windows to Gemini and printing the plain-language recommendation with pet-care tips.
+3. Run `streamlit run app.py`, add an owner and pet, generate a schedule, and click **"Explain coverage needs with AI"** — show the AI summary panel.
 
-      D[DailyPlan\nScheduledTask list + warnings] --> E
+Screenshots from each step can be stored in [`/assets`](assets/).
 
-      E[Conflict Detector\nconflict_detector.py] -->|7 conflict types\n+ dropped-task warnings| F
+---
 
-      F[Coverage Windows\nsuggest_coverage_windows\ndog walker · pet sitter] --> G
+## System Architecture
 
-      G([Schedule + Coverage\ndisplayed to user])
+```mermaid
+flowchart TD
+    A([User — Streamlit UI or CLI]) -->|owner availability\npet type + breed| B
 
-      G -->|Explain with AI\nbutton| H[ScheduleAgent\nsummarize_coverage]
-      H -->|coverage windows +\nconflicts as prompt| I1[Gemini 2.5 Flash Lite\nLLM API]
-      I1 -->|3-5 sentence\nowner summary| G
+    B[Breed DB\nBreedTrie prefix search] -->|age/energy multipliers\napplied to duration +\nfrequency| C
 
-      G -->|Fix conflicts with AI\nbutton — edge cases| J[ScheduleAgent\nfix_schedule — up to 5 rounds]
-      J -->|schedule + hints\nJSON prompt| I2[Gemini 2.5 Flash Lite\nLLM API]
-      I2 -->|JSON fix\naction · task · from_time · to_time| K[Apply Fix\n_apply_fix]
-      K -->|re-detect| E
+    C[Scheduler\nmodels.py] -->|urgency scoring\ndependency sort\nslot assignment| D
 
-      G -->|save| L[(pawpal_save.json\nPersistence)]
-      L -->|load| A
+    D[DailyPlan\nScheduledTask list + warnings] --> E
 
-      subgraph Testing ["Automated Testing"]
-          T1[test_scheduler.py\n36 tests — Scheduler behavior]
-          T2[test_agent.py\n103 tests — ConflictDetector\nAgent parsing · BreedTrie]
-          T3[eval_coverage.py\n19 checks — pipeline\n+ coverage engine]
-          T4[demo_agent.py\n5 scenarios — end-to-end\nscenario 5 calls Gemini]
-      end
+    E[Conflict Detector\nconflict_detector.py] -->|7 conflict types\n+ dropped-task warnings| F
 
-      C -.->|validates| T1
-      E -.->|validates| T2
-      H -.->|validates| T2
-      F -.->|validates| T3
-      G -.->|verifies| T4
-  ```
+    F[Coverage Windows\nsuggest_coverage_windows\ndog walker · pet sitter] --> G
+
+    G([Schedule + Coverage\ndisplayed to user])
+
+    G -->|Explain with AI\nbutton| H[ScheduleAgent\nsummarize_coverage]
+    H -->|pet profiles + coverage\nwindows as prompt| I1[Gemini 2.5 Flash Lite\nLLM API]
+    I1 -->|plain-language summary\n+ pet-care tips| G
+
+    G -->|Fix conflicts with AI\nbutton — edge cases| J[ScheduleAgent\nfix_schedule — up to 5 rounds]
+    J -->|schedule + conflict hints\nJSON prompt| I2[Gemini 2.5 Flash Lite\nLLM API]
+    I2 -->|JSON fix\naction · task · from_time · to_time| K[Apply Fix\n_apply_fix]
+    K -->|re-detect| E
+
+    G -->|save| L[(pawpal_save.json\nPersistence)]
+    L -->|load| A
+
+    subgraph Testing ["Automated Testing"]
+        T1[test_scheduler.py\n36 tests — Scheduler]
+        T2[test_agent.py\n103 tests — ConflictDetector\nAgent · BreedTrie]
+        T3[eval_coverage.py\n19 checks — pipeline\n+ coverage engine]
+        T4[demo_agent.py\n5 scenarios — end-to-end\nscenario 5 calls Gemini]
+    end
+
+    C -.->|validates| T1
+    E -.->|validates| T2
+    H -.->|validates| T2
+    F -.->|validates| T3
+    G -.->|verifies| T4
+```
 
 **Key files:**
 
 | File | Role |
 |---|---|
 | `models.py` | Data model + Scheduler algorithm |
-| `conflict_detector.py` | Conflict detection + coverage suggestions |
+| `conflict_detector.py` | Conflict detection + coverage window suggestions |
 | `agent.py` | Gemini-powered coverage synthesis (`summarize_coverage`) and iterative repair loop (`fix_schedule`) |
-| `breed_db.py` | Trie-based breed lookup + multipliers |
+| `breed_db.py` | Trie-based breed lookup + age/energy multipliers |
 | `app.py` | Streamlit UI |
 | `main.py` | CLI demo (no API key needed) |
-| `demo_agent.py` | 5-scenario scheduling pipeline demo; scenarios 1–4 need no API key, scenario 5 calls Gemini |
+| `demo_agent.py` | 5-scenario scheduling pipeline demo; scenario 5 calls Gemini |
 | `persistence.py` | JSON save / load |
-| `test_scheduler.py` | 36 unit tests for Scheduler |
-| `test_agent.py` | 103 unit tests for conflict detector + agent parsing + breed trie |
+| `test_scheduler.py` | 36 unit tests — Scheduler behavior |
+| `test_agent.py` | 103 unit tests — conflict detector, agent parsing, breed trie |
 | `eval_coverage.py` | Evaluation script — 19 predefined checks across 6 scenarios, prints PASS/FAIL |
 
 ---
 
-## Setup Instructions
+## Setup
 
-**Requirements:** Python 3.11+, a Google Gemini API key (free tier works).
+**Requirements:** Python 3.11+, a Google Gemini API key (free tier works — only needed for AI features).
 
 ```bash
 # 1. Clone and enter the repo
@@ -100,41 +116,38 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Set your Gemini API key (needed for agent features only)
+# 4. Set your Gemini API key (only needed for AI features)
 export GEMINI_API_KEY="your-key-here"   # Windows: set GEMINI_API_KEY=your-key-here
 ```
 
-**Run the CLI demo** (no API key required):
+**CLI demo** (no API key required):
 ```bash
 python main.py
 ```
-Creates owner Jordan with two pets (Mochi the dog, Luna the cat), schedules their tasks, and saves/reloads the configuration.
 
-**Run the Streamlit UI** (no API key required to generate schedules; key needed for "Explain coverage needs with AI" and "Fix conflicts with AI"):
+**Streamlit UI** (no API key to generate schedules; key needed for AI summary and repair buttons):
 ```bash
 streamlit run app.py
 ```
 
-**Run the scheduling pipeline demo** (scenarios 1–4 need no API key; scenario 5 requires `GEMINI_API_KEY`):
+**Scheduling pipeline demo** (scenarios 1–4 need no API key; scenario 5 calls Gemini):
 ```bash
 python demo_agent.py
 ```
-Interactive menu — pick any of five realistic scenarios. Each one runs the deterministic scheduler within the owner's actual availability windows, detects what couldn't fit or ended up too far apart, and computes specific coverage windows (dog walker, pet sitter) that would close each gap. Scenario 5 passes those windows to Gemini and prints a plain-language recommendation. No hand-crafted conflicts: every plan is what the scheduler actually produces.
 
 **Run all tests:**
 ```bash
 python -m pytest test_scheduler.py test_agent.py -v
+python eval_coverage.py    # 19 predefined checks, prints PASS/FAIL
 ```
 
 ---
 
 ## Sample Interactions
 
-The examples below show the three main interaction paths: the **scheduling pipeline demo** (CLI, no API key), the **AI coverage synthesis** (demo scenario 5 or Streamlit UI, requires `GEMINI_API_KEY`), and the **AI repair loop** (Streamlit UI, requires `GEMINI_API_KEY` — edge cases only, when tasks are manually placed in conflicting positions).
+### Example 1 — Commuter's dog: scheduler drops 3rd walk, coverage computed
 
-### Example 1 — Commuter's dog: scheduler drops 3rd walk, coverage computed (CLI demo)
-
-**Setup:** Morgan is available 07:00–09:00 and 18:00–19:30. Rex needs 3 walks/day, but the adult 3-hour minimum between sessions means only 2 fit. The two feedings also end up 10 h 45 m apart, exceeding the 8-hour safe limit.
+**Scenario:** Morgan is available 07:00–09:00 and 18:00–19:30. Rex (adult dog, high energy) needs 3 walks/day, but the adult 3-hour minimum gap between sessions means only 2 fit in the two windows. The two feedings end up 10 h 45 m apart, exceeding the 8-hour safe limit.
 
 **Scheduler output:**
 ```
@@ -163,9 +176,9 @@ The examples below show the three main interaction paths: the **scheduling pipel
 
 ---
 
-### Example 2 — Two-pet household: AI synthesizes coverage advice (demo scenario 5 — requires GEMINI_API_KEY)
+### Example 2 — Two-pet household: Gemini synthesizes coverage advice with pet-care tips
 
-**Setup:** Taylor is available 07:00–09:00 and 17:30–19:00. Buddy (dog) needs 3 walks and 2 feedings; Miso (cat) needs 2 feedings and 2 litter-box cleanings. All tasks are scheduled but the 8.5-hour gap between Taylor's windows leaves every recurring task too far apart, and Buddy's 3rd walk is dropped entirely.
+**Scenario:** Taylor is available 07:00–09:00 and 17:30–19:00. Buddy (adult dog) needs 3 walks and 2 feedings; Miso (adult cat) needs 2 feedings and 2 litter-box cleanings. All tasks are scheduled but the 8.5-hour gap leaves every recurring task too far apart, and Buddy's 3rd walk is dropped entirely. *(Demo scenario 5 — requires `GEMINI_API_KEY`)*
 
 **Coverage windows computed (rule-based):**
 ```
@@ -179,129 +192,54 @@ The examples below show the three main interaction paths: the **scheduling pipel
    Litter box for Miso has a 10h 30m gap. A pet sitter visiting from 13:30 to 14:15 would close it.
 ```
 
-**AI summary (Gemini — scenario 5):**
+**AI summary (Gemini):**
 ```
 Taylor, all of Buddy and Miso's morning and evening care fits your current schedule,
 but the gap between your windows leaves both pets unattended from 09:00 to 17:30.
-Buddy is missing his third walk, and both pets' midday feedings — plus Miso's
-second litter box cleaning — are overdue by the time you're home. The good news
-is that all four coverage windows overlap: a single midday visit between 13:00 and
-14:15 from someone who can walk a dog and handle basic cat care would cover
-everything at once. Book a dog walker/pet sitter for that slot and your pets'
-needs are fully met.
+Buddy is missing his third walk, and both pets' midday feedings — plus Miso's second
+litter box cleaning — are overdue by the time you're home. The good news is that all
+four coverage windows overlap: a single midday visit between 13:00 and 14:15 from
+someone who can walk a dog and handle basic cat care would cover everything at once.
+
+Pet care tips: Buddy's midday walk is a great opportunity for leash training — adult
+dogs with high energy respond well to structured heel work during walks. For Miso,
+leave an interactive puzzle toy out before you go; cats left alone for long stretches
+are calmer and less likely to over-eat when they have enrichment available.
 ```
 
 ---
 
-### Example 3 — Simple overlap, AI repair (Streamlit UI — requires GEMINI_API_KEY)
+## Design Decisions
 
-> These examples (3–5) show the repair loop, which handles edge cases when tasks are manually placed in conflicting positions in the UI. The deterministic scheduler prevents these conflicts automatically during normal scheduling.
+**Gemini 2.5 Flash Lite.** The primary AI task (coverage synthesis) is open-ended but short — a few sentences of plain-language advice. The secondary task (repair loop) is narrow and format-constrained — one JSON fix object. Flash Lite handles both cheaply and fast; a larger model adds latency with no observable quality gain for either task.
 
-**Setup:** Alex's dog Buddy has a 30-min morning walk (08:00–08:30) and a 15-min feeding accidentally placed at 08:20, overlapping by 10 minutes. (Simulates a user dragging a task to an overlapping slot in the app.)
+**Two distinct output modes.** `summarize_coverage()` uses free-text output — the prompt asks for plain language and does not constrain the format. `fix_schedule()` enforces `response_mime_type="application/json"` with an exact schema (`action`, `task`, `from_time`, `to_time`). Invalid or missing JSON responses fall back to returning the plan unchanged — the system never crashes on a bad AI response.
 
-**Conflict detected:**
-```
-[OVERLAP] Morning Walk (Buddy, 08:00–08:30) overlaps Feeding (Buddy, 08:20–08:35)
-  Hint: Move Feeding to 08:30 or later
-```
+**Rule-based scheduling, AI for synthesis and repair.** The original scheduler is deterministic and directly testable — every output can be verified by re-running conflict detection. Letting the AI schedule would make the system unpredictable and untestable. AI is confined to two well-scoped roles: narrating rule-based output in plain language, and proposing task moves when a user manually creates a conflict.
 
-**AI suggestion (Iteration 1):**
-```
-Move Feeding from 08:20 to 08:30
-```
+**Conflict hints reduce hallucination risk.** For the repair loop, the prompt includes a specific hint per conflict (`"Move Feeding to 08:30 or later"`) rather than asking the AI to reason from scratch. This nudges the model toward the right class of fix without giving the full answer, dramatically reducing incorrect suggestions.
 
-**Final schedule:**
-```
-08:00–08:30: Morning Walk (Buddy)
-08:30–08:45: Feeding (Buddy)
-All conflicts resolved in 1 iteration.
-```
-
----
-
-### Example 4 — Multi-pet cascade, AI repair (Streamlit UI — requires GEMINI_API_KEY)
-
-**Setup:** Jordan has Mochi (dog) and Luna (cat). Mochi has a walk/feeding overlap; Luna has a feeding/litter-box overlap.
-
-**Conflicts detected (2):**
-```
-[OVERLAP] Morning Walk (Mochi, 08:00–08:30) overlaps Feeding (Mochi, 08:20–08:35)
-[OVERLAP] Feeding (Luna, 10:00–10:15) overlaps Litter box (Luna, 10:10–10:20)
-```
-
-**Agent loop:**
-```
-Iteration 1: 2 conflict(s) found → Move Feeding from 08:20 to 08:30
-Iteration 2: 1 conflict(s) found → Move Litter box from 10:10 to 10:15
-All conflicts resolved in 2 iterations.
-```
-
----
-
-### Example 5 — Dependency violation, AI repair (Streamlit UI — requires GEMINI_API_KEY)
-
-**Setup:** Sam's dog Max needs medication after eating. The schedule has Medication at 08:00, but Feeding isn't until 09:00 — violating the declared dependency.
-
-**Conflict detected:**
-```
-[DEPENDENCY] Medication (Max) starts at 08:00 before dependency Feeding ends at 09:15
-  Hint: Move Medication to after 09:15
-```
-
-**AI suggestion (Iteration 1):**
-```
-Move Medication from 08:00 to 09:15
-```
-
-**Final schedule:**
-```
-09:00–09:15: Feeding (Max)
-09:15–09:20: Medication (Max)
-All conflicts resolved in 1 iteration.
-```
-
----
-
-## Design Decisions and Trade-offs
-
-**Gemini 2.5 Flash Lite over a larger model.**
-Flash Lite is fast and cheap. For coverage synthesis the task is open-ended but short (3–5 sentences), so a larger model adds latency with no observable quality gain. For the repair loop the task is narrow and format-constrained (one JSON object), where Flash Lite is clearly sufficient.
-
-**Two distinct AI output modes.**
-`summarize_coverage()` uses free-text output — the prompt asks for a plain-language message and does not constrain the format. `fix_schedule()` enforces `response_mime_type="application/json"` and defines an exact schema (`action`, `task`, `from_time`, `to_time`). Invalid or missing JSON responses fall back to returning the plan unchanged — the system never crashes on a bad AI response.
-
-**Rule-based scheduling, AI for synthesis and repair.**
-The original scheduler uses a deterministic algorithm. Letting the AI handle initial scheduling would make the system unpredictable and untestable. The AI has two well-scoped roles: narrating rule-based coverage windows in plain language (synthesis), and proposing task moves when the user manually creates a conflict (repair). Every repair suggestion is validated by re-running conflict detection.
-
-**Seven conflict types, each with a `suggested_fix` hint sent to the AI.**
-For the repair loop, the prompt includes a specific hint (`"Move Feeding to 08:30 or later"`) rather than asking the AI to reason from scratch. This reduces hallucination risk — the AI is nudged toward the right class of fix without being given the full answer.
-
-**Trie for breed lookup instead of semantic search.**
-Owners type in a breed name. Trie prefix search is O(k) per lookup (k = string length), requires no model, and handles partial matches ("Golden" → "Golden Retriever"). A vector store would add infrastructure cost and complexity with no benefit for exact or prefix-match queries.
-
-**Trade-offs accepted:**
-- Breed data is hardcoded. A real product would pull from a maintained database.
-- No authentication. The app is single-user.
+**Trie for breed lookup.** Owners type a breed name. Trie prefix search is O(k) per lookup, requires no model, and handles partial matches ("Golden" → "Golden Retriever"). A vector store would add infrastructure cost and complexity with no benefit for this exact/prefix-match use case.
 
 ---
 
 ## Testing
 
-**139 tests, all passing.**
+**139 automated tests, all passing.**
 
 ```bash
-python -m pytest test_scheduler.py test_agent.py -v   # all 139
+python -m pytest test_scheduler.py test_agent.py -v   # 139 tests
 python -m pytest test_scheduler.py -v                 # 36 — Scheduler behavior
 python -m pytest test_agent.py -v                     # 103 — conflict detector, agent, breed trie
 python eval_coverage.py                               # 19 predefined checks across 6 scenarios
 ```
 
-`eval_coverage.py` runs 19 predefined PASS/FAIL checks across 6 scenarios — including a control case (wide window, everything fits, no coverage needed) — and prints a summary line. No API key required.
+`eval_coverage.py` runs 19 PASS/FAIL checks across 6 scenarios (including a control case where everything fits and no coverage is needed). No API key required.
 
-`ScheduleAgent.fix_schedule()` and `summarize_coverage()` require a live API key and are exercised via the Streamlit UI and demo scenario 5 respectively. `demo_agent.py` provides end-to-end verification of the scheduling pipeline and coverage-window engine across 5 realistic scenarios (no mocking; scenarios 1–4 need no API key).
+The AI features (`fix_schedule()` and `summarize_coverage()`) require a live API key and are exercised via the Streamlit UI and demo scenario 5.
 
 ---
 
 ## Reflection, Ethics, and AI Collaboration
 
-See [model_card.md](model_card.md) — covers limitations, bias, misuse potential, testing results, and AI collaboration examples.
+See [model_card.md](model_card.md) — covers AI collaboration examples, limitations, bias, misuse potential, and testing results.

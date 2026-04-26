@@ -372,8 +372,16 @@ def suggest_coverage_windows(plans: dict, owner, pets) -> list[CoverageWindow]:
                 ))
 
         # 2. Walk/activity gaps inside unavailability blocks.
+        # Skip if the scheduler already dropped walk occurrences — section 3
+        # generates a slot for each missing occurrence, making this redundant.
+        walk_task_names = {s.task.name for s in by_type.get(TaskType.WALK, [])}
+        _dropped_walk = any(
+            re.search(rf"'{re.escape(n)}': only \d+ of \d+ occurrences scheduled", w)
+            for w in plan.warnings
+            for n in walk_task_names
+        )
         walk_occs = sorted(by_type.get(TaskType.WALK, []), key=lambda s: _mins(s.start_time))
-        for block_start, block_end in unavail_blocks:
+        for block_start, block_end in unavail_blocks if not _dropped_walk else []:
             # Is there a walk on either side of this unavailability block?
             before = [s for s in walk_occs if _mins(s.end_time) <= block_start]
             after  = [s for s in walk_occs if _mins(s.start_time) >= block_end]

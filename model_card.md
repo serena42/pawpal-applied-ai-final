@@ -13,17 +13,17 @@ The LLM now plays a higher‑value role: translating structured schedule output 
 
 ## Testing Results
 
-**139 tests, all passing.**
+**128 tests, all passing.**
 
 ```
 pytest test_scheduler.py test_agent.py -v
-139 passed in ~1.5s
+128 passed in ~1.5s
 ```
 
 | Suite | Tests | What it covers |
 |---|---|---|
 | `test_scheduler.py` | 36 | Scheduler behavior — urgency scoring, dependency ordering, gap enforcement, breed multipliers, time window constraints |
-| `test_agent.py` | 103 | Conflict detection (7 types), agent fix parsing, breed trie, multiplier constants, coverage window suggestions |
+| `test_agent.py` | 92 | Conflict detection (7 types), breed trie, multiplier constants, coverage window suggestions |
 
 The original fix_schedule() loop is no longer part of the production pipeline — all conflict types are now prevented by deterministic rules. The LLM is still exercised through the Streamlit UI, but its role is limited to generating explanations, summaries, and pet‑care insights rather than modifying the schedule itself.
 

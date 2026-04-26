@@ -61,19 +61,6 @@ flowchart TD
 
     G -->|save| L[(pawpal_save.json\nPersistence)]
     L -->|load| A
-
-    subgraph Testing ["Automated Testing"]
-        T1[test_scheduler.py\n36 tests — Scheduler]
-        T2[test_agent.py\n103 tests — ConflictDetector\nAgent · BreedTrie]
-        T3[eval_coverage.py\n19 checks — pipeline\n+ coverage engine]
-        T4[demo_agent.py\n5 scenarios — end-to-end\nscenario 5 calls Gemini]
-    end
-
-    C -.->|validates| T1
-    E -.->|validates| T2
-    H -.->|validates| T2
-    F -.->|validates| T3
-    G -.->|verifies| T4
 ```
 
 **Key files:**
@@ -227,9 +214,9 @@ The profile-aware tip names the age group, energy level, and a specific training
 **139 automated tests, all passing.**
 
 ```bash
-python -m pytest test_scheduler.py test_agent.py -v   # 139 tests
+python -m pytest test_scheduler.py test_agent.py -v   # 128 tests
 python -m pytest test_scheduler.py -v                 # 36 — Scheduler behavior
-python -m pytest test_agent.py -v                     # 103 — conflict detector, agent, breed trie
+python -m pytest test_agent.py -v                     # 92 — conflict detector, breed trie, multipliers
 python eval_coverage.py                               # 19 predefined checks across 6 scenarios
 ```
 

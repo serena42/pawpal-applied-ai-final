@@ -47,6 +47,14 @@ Two additional features support this:
 
 ---
 
+## Portfolio Artifact
+
+https://github.com/serena42/pawpal-applied-ai-final
+
+This project demonstrates my ability to design hybrid AI systems that balance deterministic correctness with LLM‑driven interpretation. I built a fully testable scheduling engine with 128 automated tests, then layered AI on top only where it adds value: personalization, explanation, and behavioral insight. PawPal+ reflects my engineering philosophy — correctness in rules, clarity in architecture, and AI used intentionally rather than everywhere. It shows that I can design, implement, test, and document a complete system end‑to‑end.
+
+---
+
 ## 🏗️ System Architecture
 
 ```mermaid
@@ -294,3 +302,4 @@ Rule-driven at its core, but AI can enrich the owner’s understanding of long-t
 - **Optional AI layer:** “month at a glance” summaries; seasonal context (“Shedding season means more grooming tasks this month”).
 
 **Why this stays mostly deterministic:** these are predictable intervals. AI adds narrative, not scheduling logic.
+

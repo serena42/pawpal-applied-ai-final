@@ -4,8 +4,11 @@
 
 PawPal+ is an extension of Pawpal () helped pet owners plan their day.  Pawpal+ takes over when their schedule can't cover everything their pets need. A deterministic scheduler places care tasks within the owner's available hours; when tasks can't all fit or end up too far apart, the system computes specific coverage windows (🦮 dog walker / 🏠 pet sitter) and uses Gemini 2.5 Flash Lite to explain those windows in plain language — including care tips tailored to each pet's age group and energy level.
 
-<!-- 📸 SCREENSHOT: Full UI after generating a schedule — show the schedule table, coverage section, and "Explain with AI" button. Save as assets/ui-overview.png -->
-![PawPal+ schedule UI overview](assets/ui-overview.png)
+![PawPal+ UI overview 1](assets/ui-overview1.png)
+![PawPal+ UI overview 2](assets/ui-overview2.png)
+![PawPal+ UI overview 3](assets/ui-overview3.png)
+![PawPal+ UI overview 4](assets/ui-overview4.png)
+![PawPal+ UI overview 5](assets/ui-overview5.png)
 
 ---
 
@@ -160,8 +163,11 @@ python eval_coverage.py    # 19 predefined checks, prints PASS/FAIL
    Walk for Rex: 1 of 3 daily occurrence(s) couldn't fit. A dog walker from 13:05 to 13:55 covers the missing occurrence.
 ```
 
-<!-- 📸 SCREENSHOT: Streamlit UI showing Example 1 — the schedule table with [WARN] badges and the Coverage Needed section with pet sitter + dog walker cards. Save as assets/ui-coverage.png -->
-![PawPal+ UI — schedule with coverage window suggestions](assets/ui-coverage.png)
+![PawPal+ UI — schedule with coverage window suggestions (1)](assets/ui-overview1.png)
+![PawPal+ UI — schedule with coverage window suggestions (2)](assets/ui-overview2.png)
+![PawPal+ UI — schedule with coverage window suggestions (3)](assets/ui-overview3.png)
+![PawPal+ UI — schedule with coverage window suggestions (4)](assets/ui-overview4.png)
+![PawPal+ UI — schedule with coverage window suggestions (5)](assets/ui-overview5.png)
 
 ---
 

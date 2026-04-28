@@ -2,7 +2,7 @@
 
 **Applied AI Final Project** | CodePath | Spring 2026
 
-PawPal+ is an extension of [Pawpal](https://github.com/serena42/ai110-mod2-pawpal) helped pet owners plan their day.  Pawpal+ takes over when their schedule can't cover everything their pets need. A deterministic scheduler places care tasks within the owner's available hours; when tasks can't all fit or end up too far apart, the system computes specific coverage windows (🦮 dog walker / 🏠 pet sitter) and uses Gemini 2.5 Flash Lite to explain those windows in plain language — including care tips tailored to each pet's age group and energy level.
+PawPal+ is an extension of [Pawpal](https://github.com/serena42/ai110-mod2-pawpal) which helped pet owners plan their day.  Pawpal+ takes over when their schedule can't cover everything their pets need. A deterministic scheduler places care tasks within the owner's available hours; when tasks can't all fit or end up too far apart, the system computes specific coverage windows for 🦮 dog walker / 🏠 pet sitter coverage and uses Gemini 2.5 Flash Lite to explain those windows in plain language — including care tips tailored to each pet's age group and energy level.
 
 ![PawPal+ UI overview 1](assets/ui-overview1.png)
 ![PawPal+ UI overview 2](assets/ui-overview2.png)
